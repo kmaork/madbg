@@ -14,10 +14,10 @@ from .communication import pipe, receive_message
 
 
 @contextmanager
-def get_client_connection(addr, port):
+def get_client_connection(ip, port):
     server_socket = socket.socket()
     server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, True)
-    server_socket.bind((addr, port))
+    server_socket.bind((ip, port))
     server_socket.listen(1)
     sock, _ = server_socket.accept()
     server_socket.close()
@@ -28,8 +28,8 @@ def get_client_connection(addr, port):
 
 
 @contextmanager
-def remote_pty(addr, port):
-    with get_client_connection(addr, port) as sock:
+def remote_pty(ip, port):
+    with get_client_connection(ip, port) as sock:
         # todo: should we set settings like that, or just write some ansi? https://apple.stackexchange.com/questions/33736/can-a-terminal-window-be-resized-with-a-terminal-command
         term_data = receive_message(sock)
         term_attrs, term_type, term_size = term_data['term_attrs'], term_data['term_type'], term_data['term_size']
@@ -43,8 +43,8 @@ def remote_pty(addr, port):
 
 
 class RemoteIPythonDebugger(TerminalPdb):
-    def __init__(self, addr, port):
-        self.__context = remote_pty(addr, port)
+    def __init__(self, ip, port):
+        self.__context = remote_pty(ip, port)
         # TODO: that should happen in set_trace()
         slave_fd, self.term_type = self.__context.__enter__()
         atexit.register(self.shutdown)
@@ -107,8 +107,8 @@ class RemoteIPythonDebugger(TerminalPdb):
             self.shutdown()
 
 
-def set_trace(addr, port=DEFAULT_PORT):
-    RemoteIPythonDebugger(addr, port).set_trace(sys._getframe(1))
+def set_trace(ip='127.0.0.1', port=DEFAULT_PORT):
+    RemoteIPythonDebugger(ip, port).set_trace(sys._getframe(1))
 
 
 # TODO: add post_mortem

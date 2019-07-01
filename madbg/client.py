@@ -7,6 +7,7 @@ import termios
 from contextlib import contextmanager
 
 from .communication import pipe, send_message
+from .consts import DEFAULT_PORT
 
 
 # todo: hardcoded 0
@@ -41,17 +42,17 @@ def prepare_terminal():
 
 
 @contextmanager
-def connect_to_server(addr, ip):
+def connect_to_server(ip, port):
     s = socket.socket()
-    s.connect((addr, ip))
+    s.connect((ip, port))
     try:
         yield s
     finally:
         s.close()
 
 
-def debug(addr, ip):
-    with connect_to_server(addr, ip) as socket:
+def debug(ip='127.0.0.1', port=DEFAULT_PORT):
+    with connect_to_server(ip, port) as socket:
         term_size = os.get_terminal_size(0)
         term_data = dict(term_attrs=termios.tcgetattr(0),
                          # prompt toolkit will receive this string, and it can be 'unknown'

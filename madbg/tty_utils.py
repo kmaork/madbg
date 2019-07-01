@@ -1,3 +1,4 @@
+import errno
 import os
 import pty
 import struct
@@ -29,30 +30,45 @@ def make_session_leader():
     os.setsid()
 
 
-def detach_ctty(fd):
-    fcntl.ioctl(fd, termios.TIOCNOTTY)
+def detach_ctty(ctty_fd):
+    # When a process detaches from a tty, it is sent the signals SIGHUP and then SIGCONT
+    signal.signal(signal.SIGHUP, lambda *a: None)  # TODO: also sigcont?  # TODO: restore original handler
+    fcntl.ioctl(ctty_fd, termios.TIOCNOTTY)
 
 
 def attach_ctty(fd):
     fcntl.ioctl(fd, termios.TIOCSCTTY, 1)  # TODO: what is the 1?
 
 
+def get_ctty_fd():
+    try:
+        return os.open(os.ctermid(), os.O_RDWR)
+    except OSError as e:
+        if e.errno == errno.ENXIO:
+            return None
+        raise
+
+
+def detach_current_ctty():
+    ctty_fd = get_ctty_fd()
+    if ctty_fd is not None:
+        if is_session_leader():
+            detach_ctty(ctty_fd)
+        else:
+            make_session_leader()
+        os.close(ctty_fd)
+
+
 @contextmanager
 def set_ctty(fd):
-    orig_ctty = os.open('/dev/tty', os.O_RDWR)  # TODO: use os.getttyname, and handle case when there is none
-    if not is_session_leader():
-        make_session_leader()
+    detach_current_ctty()
     attach_ctty(fd)
     try:
         yield
     finally:
         # TODO: are we attached to a tty originally? because bash is in a different process group,
         # and it is probably attached, so does it mean we aren't? if we are, we should reattach
-
-        # When a process detaches from a tty, it is sent the signals SIGHUP and then SIGCONT
-        signal.signal(signal.SIGHUP, lambda *a: None)  # TODO: also sigcont?  # TODO: restore original handler
         detach_ctty(fd)
-        os.close(orig_ctty)
 
 
 def resize_terminal(fd, rows, cols):
