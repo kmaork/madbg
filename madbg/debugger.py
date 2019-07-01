@@ -13,13 +13,6 @@ from .consts import DEFAULT_PORT
 from .communication import pipe, receive_message
 
 
-def threaded(func):
-    def wrapper(*args, **kwargs):
-        return ThreadPoolExecutor(1).submit(func, *args, *kwargs)
-
-    return wrapper
-
-
 @contextmanager
 def get_client_connection(addr, port):
     server_socket = socket.socket()
@@ -45,7 +38,7 @@ def remote_pty(addr, port):
             resize_terminal(slave_fd, term_size[0], term_size[1])
             modify_terminal(slave_fd, term_attrs)
             with set_ctty(slave_fd):
-                threaded(pipe)({sock: master_fd, master_fd: sock})  # TODO: join the thread sometime
+                ThreadPoolExecutor(1).submit(pipe, {sock: master_fd, master_fd: sock})  # TODO: join the thread sometime
                 yield slave_fd, term_type
 
 

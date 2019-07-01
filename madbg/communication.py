@@ -27,9 +27,10 @@ def blocking_read(fd, n):
 
 def pipe(pipe_dict):
     """
-    Pass data between fds until one of them is closed.
+    Pass data between fds until one of the source fds is closed.
     :param pipe_dict: A dict mapping between source fds and dst fds
     """
+    # TODO: should the api just receive two fds? should we check if the dest socket was closed as well?
     for fd in pipe_dict:
         set_nonblocking(fd)
     we_done = False
@@ -39,6 +40,7 @@ def pipe(pipe_dict):
             data = os.read(fh, 1024)
             if not data:
                 we_done = True
+                break
             os.write(pipe_dict[fh], data)
 
 
