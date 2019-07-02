@@ -37,6 +37,7 @@ def run_client_process(new_value):
 
 @mark.parametrize('start_debugger_with_ctty', (True, False))
 def test_set_trace(start_debugger_with_ctty):
+    # TODO: test more edge cases and ipdb commands
     value_to_change = Value('l', 0)
     new_value = 1
     debugger_process = Process(target=run_set_trace_process, args=(value_to_change, start_debugger_with_ctty))
@@ -45,7 +46,7 @@ def test_set_trace(start_debugger_with_ctty):
     client_process.start()
     client_process.join(JOIN_TIMEOUT)
     debugger_process.join(JOIN_TIMEOUT)
-    print(value_to_change.value, new_value)
+    print(value_to_change.value, new_value)  # TODO: make tests work with pytest
     assert value_to_change.value == new_value
 
 
