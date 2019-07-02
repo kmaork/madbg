@@ -55,6 +55,7 @@ class RemoteIPythonDebugger(TerminalPdb):
         """
         Copy of super, because we need to add input and output params to PromptSession
         """
+
         # TODO: open another PR to ipython, allowing to delete this duplication
         def get_prompt_tokens():
             return [(Token.Prompt, self.prompt)]
@@ -111,7 +112,15 @@ def set_trace(ip='127.0.0.1', port=DEFAULT_PORT):
     RemoteIPythonDebugger(ip, port).set_trace(sys._getframe(1))
 
 
-# TODO: add post_mortem
+# TODO: tests for post mortem
+def post_mortem(ip='127.0.0.1', port=DEFAULT_PORT, traceback=None):
+    traceback = traceback or sys.exc_info()[2] or sys.last_traceback
+    p = RemoteIPythonDebugger(ip, port)
+    p.reset()
+    p.interaction(None, traceback)
+
+
+# TODO: add tox
 
 if __name__ == '__main__':
     set_trace('127.0.0.1')

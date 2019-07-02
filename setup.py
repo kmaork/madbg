@@ -11,4 +11,5 @@ setup(
     entry_points=dict(
         console_scripts=['madbg=madbg.__main__']
     )
+    # TODO: copy some nice setup.py and upload to pypi
 )
