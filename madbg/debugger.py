@@ -55,7 +55,7 @@ class RemoteIPythonDebugger(TerminalPdb):
         """
         Copy of super, because we need to add input and output params to PromptSession
         """
-
+        # TODO: open another PR to ipython, allowing to delete this duplication
         def get_prompt_tokens():
             return [(Token.Prompt, self.prompt)]
 
