@@ -12,10 +12,9 @@ from .consts import DEFAULT_IP, DEFAULT_PORT
 tty_handle = os.open(os.ctermid(), os.O_RDWR)
 
 
-# todo: if server fails to die, we have no control of the local terminal :(
-# todo: support windows?
-# todo: allow connecting asynchronously to server
-
+# TODO: if server fails to die, we have no control of the local terminal :(
+# TODO: support windows?
+# TODO: use gdb or ptrace to attach to process
 @contextmanager
 def tmp_atexit(func, *args, **kwargs):
     atexit.register(func, *args, **kwargs)

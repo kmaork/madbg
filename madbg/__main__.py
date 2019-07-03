@@ -34,7 +34,6 @@ def run(context, bind_ip, port, run_as_module, py_file, no_post_mortem, use_set_
     run_with_debugging(bind_ip, port, py_file, run_as_module, argv, not no_post_mortem, use_set_trace)
 
 
-# TODO: add option to run packages with post mortem
 cli.add_command(connect)
 cli.add_command(run)
 cli()

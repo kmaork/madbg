@@ -30,7 +30,7 @@ def get_client_connection(ip, port):
 @contextmanager
 def remote_pty(ip, port):
     with get_client_connection(ip, port) as sock:
-        # todo: should we set settings like that, or just write some ansi? https://apple.stackexchange.com/questions/33736/can-a-terminal-window-be-resized-with-a-terminal-command
+        # TODO: should we set settings like that, or just write some ansi? https://apple.stackexchange.com/questions/33736/can-a-terminal-window-be-resized-with-a-terminal-command
         term_data = receive_message(sock)
         term_attrs, term_type, term_size = term_data['term_attrs'], term_data['term_type'], term_data['term_size']
         # TODO: what is the correct term type? the pty or the remote tty?
@@ -45,8 +45,8 @@ def remote_pty(ip, port):
 class RemoteIPythonDebugger(TerminalPdb):
     def __init__(self, ip, port):
         self.__context = remote_pty(ip, port)
-        # TODO: that should happen in set_trace()
-        slave_fd, self.term_type = self.__context.__enter__()
+        # TODO: that should happen in trace_dispatch()
+        slave_fd, self.term_type = self.__context.__enter__() # TODO: this is pretty ugly
         atexit.register(self.shutdown)
         super(RemoteIPythonDebugger, self).__init__(stdin=os.fdopen(slave_fd, 'r'), stdout=os.fdopen(slave_fd, 'w'))
         self.use_rawinput = True
@@ -116,7 +116,7 @@ class RemoteIPythonDebugger(TerminalPdb):
         self.reset()
         self.interaction(None, traceback)
 
-# TODO: tests for post mortem
+# TODO: tests for apis
 # TODO: add tox
 # TODO: weird exception if pressing a lot of nexts
 # TODO: support python2? or completely python3

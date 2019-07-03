@@ -88,3 +88,5 @@ def run_with_debugging(ip, port, python_file, run_as_module, argv, use_post_mort
 
 if __name__ == '__main__':
     set_trace(DEFAULT_IP)
+
+# TODO: update readme with new features, mention similar projects
