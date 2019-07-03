@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from .communication import pipe, send_message
 from .consts import DEFAULT_PORT
 
-TTY_HANDLE = 0  # todo: what should this really be?
+tty_handle = os.open(os.ctermid(), os.O_RDWR)
 
 
 # todo: if server fails to die, we have no control of the local terminal :(
@@ -35,9 +35,9 @@ def promise_cleanup(func, cleanup):
 
 
 def prepare_terminal():
-    old_tty_mode = termios.tcgetattr(TTY_HANDLE)
-    set_raw = partial(setraw, TTY_HANDLE, termios.TCSANOW)
-    cleanup = partial(termios.tcsetattr, TTY_HANDLE, termios.TCSANOW, old_tty_mode)
+    old_tty_mode = termios.tcgetattr(tty_handle)
+    set_raw = partial(setraw, tty_handle, termios.TCSANOW)
+    cleanup = partial(termios.tcsetattr, tty_handle, termios.TCSANOW, old_tty_mode)
     # TODO: save a backup of the terminal setting to the disk, providing an entry point to restore them
     return promise_cleanup(set_raw, cleanup)
 
@@ -54,8 +54,8 @@ def connect_to_server(ip, port):
 
 def debug(ip='127.0.0.1', port=DEFAULT_PORT):
     with connect_to_server(ip, port) as socket:
-        term_size = os.get_terminal_size(TTY_HANDLE)
-        term_data = dict(term_attrs=termios.tcgetattr(TTY_HANDLE),
+        term_size = os.get_terminal_size(tty_handle)
+        term_data = dict(term_attrs=termios.tcgetattr(tty_handle),
                          # prompt toolkit will receive this string, and it can be 'unknown'
                          term_type=os.environ.get("TERM", "unknown"),
                          term_size=(term_size.lines, term_size.columns))
