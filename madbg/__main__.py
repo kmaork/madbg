@@ -1,6 +1,6 @@
 import click
 from madbg.client import debug
-from madbg.consts import DEFAULT_PORT
+from madbg.consts import DEFAULT_IP, DEFAULT_PORT
 
 
 @click.group()
@@ -9,7 +9,7 @@ def cli():
 
 
 @click.command()
-@click.argument('ip', type=str, default='127.0.0.1')
+@click.argument('ip', type=str, default=DEFAULT_IP)
 @click.argument('port', type=int, default=DEFAULT_PORT)
 def connect(ip, port):
     debug(ip, port)

@@ -1,3 +1,5 @@
+from bdb import BdbQuit
+
 from IPython.terminal.debugger import *
 import atexit
 import socket
@@ -9,8 +11,10 @@ from prompt_toolkit.input.vt100 import Vt100Input
 from prompt_toolkit.output.vt100 import Vt100_Output
 
 from .tty_utils import set_ctty, resize_terminal, modify_terminal, open_pty
-from .consts import DEFAULT_PORT
+from .consts import DEFAULT_IP, DEFAULT_PORT
 from .communication import pipe, receive_message
+
+DEBUGGER_CONNECTED_SIGNAL = signal.SIGUSR1
 
 
 @contextmanager
@@ -101,6 +105,8 @@ class RemoteIPythonDebugger(TerminalPdb):
     def trace_dispatch(self, frame, event, arg):
         try:
             super(RemoteIPythonDebugger, self).trace_dispatch(frame, event, arg)
+        except BdbQuit:
+            self.quitting = True
         except:
             self.shutdown()
             raise
@@ -108,12 +114,30 @@ class RemoteIPythonDebugger(TerminalPdb):
             self.shutdown()
 
 
-def set_trace(ip='127.0.0.1', port=DEFAULT_PORT):
+def set_trace(ip=DEFAULT_IP, port=DEFAULT_PORT):
     RemoteIPythonDebugger(ip, port).set_trace(sys._getframe(1))
 
 
+def wait_for_connection_and_send_signal(ip, port):
+    try:
+        debugger = RemoteIPythonDebugger(ip, port)
+    finally:
+        # TODO: on exception, this raises randomly from the main thread and not from set_trace_on_connect
+        os.kill(0, DEBUGGER_CONNECTED_SIGNAL)
+    return debugger
+
+
+def set_trace_on_connect(ip=DEFAULT_IP, port=DEFAULT_PORT):
+    def new_handler(_, frame):
+        signal.signal(DEBUGGER_CONNECTED_SIGNAL, old_handler)
+        debugger_future.result().set_trace(frame)
+
+    old_handler = signal.signal(DEBUGGER_CONNECTED_SIGNAL, new_handler)
+    debugger_future = ThreadPoolExecutor(1).submit(wait_for_connection_and_send_signal, ip, port)
+
+
 # TODO: tests for post mortem
-def post_mortem(ip='127.0.0.1', port=DEFAULT_PORT, traceback=None):
+def post_mortem(ip=DEFAULT_IP, port=DEFAULT_PORT, traceback=None):
     traceback = traceback or sys.exc_info()[2] or sys.last_traceback
     p = RemoteIPythonDebugger(ip, port)
     p.reset()
@@ -123,7 +147,7 @@ def post_mortem(ip='127.0.0.1', port=DEFAULT_PORT, traceback=None):
 # TODO: add tox
 
 if __name__ == '__main__':
-    set_trace('127.0.0.1')
+    set_trace(DEFAULT_IP)
 
 # TODO: weird exception if pressing a lot of nexts
 # TODO: support python2? or completely python3

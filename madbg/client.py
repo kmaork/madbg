@@ -7,13 +7,13 @@ import termios
 from contextlib import contextmanager
 
 from .communication import pipe, send_message
-from .consts import DEFAULT_PORT
+from .consts import DEFAULT_IP, DEFAULT_PORT
 
 tty_handle = os.open(os.ctermid(), os.O_RDWR)
 
 
 # todo: if server fails to die, we have no control of the local terminal :(
-# todo: support windows in client?
+# todo: support windows?
 # todo: allow connecting asynchronously to server
 
 @contextmanager
@@ -52,7 +52,7 @@ def connect_to_server(ip, port):
         s.close()
 
 
-def debug(ip='127.0.0.1', port=DEFAULT_PORT):
+def debug(ip=DEFAULT_IP, port=DEFAULT_PORT):
     with connect_to_server(ip, port) as socket:
         term_size = os.get_terminal_size(tty_handle)
         term_data = dict(term_attrs=termios.tcgetattr(tty_handle),

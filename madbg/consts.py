@@ -1,1 +1,2 @@
 DEFAULT_PORT = 0xdb9
+DEFAULT_IP = '127.0.0.1'
