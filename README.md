@@ -1,7 +1,7 @@
 # madbg
 A remote python debugger based on the IPython debugger (like ipdb) featuring a full remote TTY!
 
-Currently doesn't support windows.
+Currently doesn't support windows and Python 2, but hopefully not far from both.
 
 ## Installation
 `pip install git+https://github.com/kmaork/madbg#egg=madbg`
