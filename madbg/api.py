@@ -1,7 +1,11 @@
 import os
+import runpy
 import signal
 import sys
+import traceback
 from concurrent.futures import ThreadPoolExecutor
+from pdb import Restart
+from contextlib import contextmanager
 
 from .consts import DEFAULT_IP, DEFAULT_PORT
 from .debugger import RemoteIPythonDebugger
@@ -34,9 +38,52 @@ def set_trace_on_connect(ip=DEFAULT_IP, port=DEFAULT_PORT):
 
 def post_mortem(ip=DEFAULT_IP, port=DEFAULT_PORT, traceback=None):
     traceback = traceback or sys.exc_info()[2] or sys.last_traceback
-    p = RemoteIPythonDebugger(ip, port)
-    p.reset()
-    p.interaction(None, traceback)
+    debugger = RemoteIPythonDebugger(ip, port)
+    debugger.post_mortem(traceback)
+
+
+@contextmanager
+def _preserve_sys_state():
+    sys_argv = sys.argv[:]
+    sys_path = sys.path[:]
+    try:
+        yield
+    finally:
+        sys.argv = sys_argv
+        sys.path = sys_path
+
+
+def _run_py(python_file, run_as_module, argv):
+    run_name = '__main__'
+    with _preserve_sys_state():
+        sys.argv = argv
+        if not run_as_module:
+            sys.path[0] = os.path.dirname(python_file)
+        if run_as_module:
+            runpy.run_module(python_file, alter_sys=True, run_name=run_name)
+        else:
+            runpy.run_path(python_file, run_name=run_name)
+
+
+def run_with_debugging(ip, port, python_file, run_as_module, argv, use_post_mortem=True, use_set_trace=False):
+    try:
+        if use_set_trace:
+            RemoteIPythonDebugger(ip, port).set_sys_trace()
+        _run_py(python_file, run_as_module, argv)
+    except Restart:
+        print("Restarting", python_file, "with arguments:")
+        print("\t" + " ".join(argv))
+        return run_with_debugging(ip, port, python_file, run_as_module, argv)
+    except SystemExit:
+        print("The program exited via sys.exit(). Exit status:", end=' ')
+        print(sys.exc_info()[1])
+    except SyntaxError:
+        raise
+    except:
+        if use_post_mortem:
+            traceback.print_exc()
+            print('\nWaiting for debugger connection...')
+            post_mortem(ip, port, sys.exc_info()[2])
 
 
 if __name__ == '__main__':

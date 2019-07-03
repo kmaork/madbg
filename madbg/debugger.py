@@ -109,6 +109,13 @@ class RemoteIPythonDebugger(TerminalPdb):
         if self.quitting:
             self.shutdown()
 
+    def set_sys_trace(self):
+        sys.settrace(self.trace_dispatch)
+
+    def post_mortem(self, traceback):
+        self.reset()
+        self.interaction(None, traceback)
+
 # TODO: tests for post mortem
 # TODO: add tox
 # TODO: weird exception if pressing a lot of nexts
