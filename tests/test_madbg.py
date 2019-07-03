@@ -1,6 +1,7 @@
 import os
 from pytest import mark
 import madbg
+import madbg.api
 import madbg.client
 
 from .utils import enter_pty, get_random_port, run_in_process
@@ -14,7 +15,7 @@ def run_set_trace_process(start_with_ctty, port):
     """
     enter_pty(start_with_ctty)
     original_value = value_to_change = 0
-    madbg.set_trace(port=port)
+    madbg.api.set_trace(port=port)
     return original_value != value_to_change
 
 
