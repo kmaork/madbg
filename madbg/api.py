@@ -65,25 +65,28 @@ def _run_py(python_file, run_as_module, argv):
             runpy.run_path(python_file, run_name=run_name)
 
 
-def run_with_debugging(ip, port, python_file, run_as_module, argv, use_post_mortem=True, use_set_trace=False):
+def run_with_debugging(ip, port, python_file, run_as_module, argv, use_post_mortem=True, use_set_trace=False,
+                       debugger=None):
+    if debugger is None:
+        debugger = RemoteIPythonDebugger(ip, port)
     try:
         if use_set_trace:
-            RemoteIPythonDebugger(ip, port).set_sys_trace()
+            debugger.set_sys_trace()
         _run_py(python_file, run_as_module, argv)
     except Restart:
-        print("Restarting", python_file, "with arguments:")
-        print("\t" + " ".join(argv))
-        return run_with_debugging(ip, port, python_file, run_as_module, argv)
+        print("Restarting", python_file, "with arguments:", file=debugger.stdout)
+        print("\t" + " ".join(argv), file=debugger.stdout)
+        return run_with_debugging(ip, port, python_file, run_as_module, argv, use_post_mortem, use_set_trace, debugger)
     except SystemExit:
-        print("The program exited via sys.exit(). Exit status:", end=' ')
-        print(sys.exc_info()[1])
+        print("The program exited via sys.exit(). Exit status:", end=' ', file=debugger.stdout)
+        print(sys.exc_info()[1], file=debugger.stdout)
     except SyntaxError:
         raise
     except:
         if use_post_mortem:
-            traceback.print_exc()
-            print('\nWaiting for debugger connection...')
-            post_mortem(ip, port, sys.exc_info()[2])
+            print(traceback.format_exc(), file=debugger.stdout)
+            print('\nWaiting for debugger connection...', file=debugger.stdout)
+            debugger.post_mortem(sys.exc_info()[2])
 
 
 if __name__ == '__main__':

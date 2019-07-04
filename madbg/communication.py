@@ -8,6 +8,8 @@ from io import BytesIO
 MESSAGE_LENGTH_FMT = 'I'
 
 
+# TODO: support ssl
+
 def set_nonblocking(fd):
     flags = fcntl.fcntl(fd, fcntl.F_GETFL)
     fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
@@ -35,7 +37,8 @@ def pipe(pipe_dict):
         set_nonblocking(fd)
     we_done = False
     while not we_done:
-        r, _, _ = select.select(list(pipe_dict), [], [], 0.1) # TODO: can we understand if the readable event is a connection reset?
+        r, _, _ = select.select(list(pipe_dict), [], [],
+                                0.1)  # TODO: can we understand if the readable event is a connection reset?
         for fh in r:
             data = os.read(fh, 1024)
             if not data:

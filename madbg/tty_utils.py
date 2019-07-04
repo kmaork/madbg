@@ -31,13 +31,16 @@ def make_session_leader():
 
 
 def detach_ctty(ctty_fd):
+    # TODO: should we handle sigcont?
+    # TODO: will children receive sighup as well?
+    # TODO: why are we receiving sighup multiple times?
     # When a process detaches from a tty, it is sent the signals SIGHUP and then SIGCONT
-    signal.signal(signal.SIGHUP, lambda *a: None)  # TODO: also sigcont?  # TODO: restore original handler
+    signal.signal(signal.SIGHUP, lambda *a: None)
     fcntl.ioctl(ctty_fd, termios.TIOCNOTTY)
 
 
 def attach_ctty(fd):
-    fcntl.ioctl(fd, termios.TIOCSCTTY, 1)  # TODO: what is the 1?
+    fcntl.ioctl(fd, termios.TIOCSCTTY, 1)
 
 
 def get_ctty_fd():

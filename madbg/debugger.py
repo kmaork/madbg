@@ -44,9 +44,9 @@ def remote_pty(ip, port):
 
 class RemoteIPythonDebugger(TerminalPdb):
     def __init__(self, ip, port):
-        self.__context = remote_pty(ip, port)
+        self._remote_pty_ctx_manager = remote_pty(ip, port)
         # TODO: that should happen in trace_dispatch()
-        slave_fd, self.term_type = self.__context.__enter__() # TODO: this is pretty ugly
+        slave_fd, self.term_type = self._remote_pty_ctx_manager.__enter__()  # TODO: this is pretty ugly
         atexit.register(self.shutdown)
         super(RemoteIPythonDebugger, self).__init__(stdin=os.fdopen(slave_fd, 'r'), stdout=os.fdopen(slave_fd, 'w'))
         self.use_rawinput = True
@@ -96,7 +96,7 @@ class RemoteIPythonDebugger(TerminalPdb):
         )  # TODO: understand prompt toolkit implementation
 
     def shutdown(self):
-        self.__context.__exit__(None, None, None)
+        self._remote_pty_ctx_manager.__exit__(None, None, None)
 
     def trace_dispatch(self, frame, event, arg):
         try:
@@ -115,6 +115,13 @@ class RemoteIPythonDebugger(TerminalPdb):
     def post_mortem(self, traceback):
         self.reset()
         self.interaction(None, traceback)
+
+    def do_continue(self, arg):
+        if not self.nosigint:
+            print('Resuming program, press Ctrl-C to relaunch debugger. Use q to exit.', file=self.stdout)
+        return super(RemoteIPythonDebugger, self).do_continue(arg)
+
+    do_c = do_cont = do_continue
 
 # TODO: tests for apis
 # TODO: add tox
