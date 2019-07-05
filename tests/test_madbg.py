@@ -22,12 +22,13 @@ def run_set_trace_process(start_with_ctty, port):
 def run_client_process(port):
     master_fd = enter_pty(True)
     os.write(master_fd, 'value_to_change += 1\nc\n'.encode())
-    madbg.client.debug(port=port)
+    madbg.client.connect_to_debugger(port=port)
 
 
 @mark.parametrize('start_debugger_with_ctty', (True, False))
 def test_set_trace(start_debugger_with_ctty):
     # TODO: test more edge cases and ipdb commands
+    # TODO: test when a process is a deamon
     port = get_random_port()
     debugger_future = run_in_process(run_set_trace_process, start_debugger_with_ctty, port)
     client_future = run_in_process(run_client_process, port)

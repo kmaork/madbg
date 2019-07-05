@@ -51,7 +51,8 @@ def connect_to_server(ip, port):
         s.close()
 
 
-def debug(ip=DEFAULT_IP, port=DEFAULT_PORT):
+def connect_to_debugger(ip=DEFAULT_IP, port=DEFAULT_PORT):
+    # TODO: allow passing timeout (that can be infinite)
     with connect_to_server(ip, port) as socket:
         term_size = os.get_terminal_size(tty_handle)
         term_data = dict(term_attrs=termios.tcgetattr(tty_handle),

@@ -32,6 +32,7 @@ def pipe(pipe_dict):
     Pass data between fds until one of the source fds is closed.
     :param pipe_dict: A dict mapping between source fds and dst fds
     """
+    # TODO: can we use splice, or ebpf?
     # TODO: should the api just receive two fds? should we check if the dest socket was closed as well?
     for fd in pipe_dict:
         set_nonblocking(fd)

@@ -9,8 +9,9 @@ from contextlib import contextmanager
 from prompt_toolkit.input.vt100 import Vt100Input
 from prompt_toolkit.output.vt100 import Vt100_Output
 
-from .tty_utils import set_ctty, resize_terminal, modify_terminal, open_pty
+from .tty_utils import set_ctty, resize_terminal, modify_terminal, open_pty, print_to_ctty
 from .communication import pipe, receive_message
+from .utils import LazyInit
 
 
 @contextmanager
@@ -42,11 +43,22 @@ def remote_pty(ip, port):
                 yield slave_fd, term_type
 
 
-class RemoteIPythonDebugger(TerminalPdb):
+class RemoteIPythonDebugger(TerminalPdb, metaclass=LazyInit):
+    """
+    Initializes IPython's TerminalPdb with stdio from a pty.
+    As TerminalPdb uses prompt_toolkit instead of the builtin input(),
+    we can use it to allow line editing and tab completion for files other than stdio (in this case, the pty).
+    Because we need to provide the stdin and stdout params to the __init__, and they require a connection to the client,
+    we use the LazyInit metaclass to allow instantiation before having to actually connect.
+    """
+
     def __init__(self, ip, port):
+        # TODO: allow returning pty before connecting to client, so we don't have to use LazyInit
         self._remote_pty_ctx_manager = remote_pty(ip, port)
-        # TODO: that should happen in trace_dispatch()
+        # TODO: is this the right way to do this?
+        print_to_ctty('Waiting for connection from debugger console on {}:{}'.format(ip, port))
         slave_fd, self.term_type = self._remote_pty_ctx_manager.__enter__()  # TODO: this is pretty ugly
+        # TODO: print that we connected before detaching ctty
         atexit.register(self.shutdown)
         super(RemoteIPythonDebugger, self).__init__(stdin=os.fdopen(slave_fd, 'r'), stdout=os.fdopen(slave_fd, 'w'))
         self.use_rawinput = True
@@ -96,6 +108,7 @@ class RemoteIPythonDebugger(TerminalPdb):
         )  # TODO: understand prompt toolkit implementation
 
     def shutdown(self):
+        print('Exiting debugger', file=self.stdout)
         self._remote_pty_ctx_manager.__exit__(None, None, None)
 
     def trace_dispatch(self, frame, event, arg):

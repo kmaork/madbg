@@ -67,6 +67,8 @@ def _run_py(python_file, run_as_module, argv):
 
 def run_with_debugging(ip, port, python_file, run_as_module, argv, use_post_mortem=True, use_set_trace=False,
                        debugger=None):
+    # TODO: check and test this behavior
+    # TODO: add option for preemptive settrace
     if debugger is None:
         debugger = RemoteIPythonDebugger(ip, port)
     try:
@@ -85,8 +87,9 @@ def run_with_debugging(ip, port, python_file, run_as_module, argv, use_post_mort
     except:
         if use_post_mortem:
             print(traceback.format_exc(), file=debugger.stdout)
-            print('\nWaiting for debugger connection...', file=debugger.stdout)
             debugger.post_mortem(sys.exc_info()[2])
+    else:
+        print('{} finished running successfully', file=debugger.stdout)
 
 
 if __name__ == '__main__':

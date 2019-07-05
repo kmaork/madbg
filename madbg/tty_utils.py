@@ -102,3 +102,12 @@ def open_pty():
     finally:
         os.close(master_fd)
         os.close(slave_fd)
+
+
+def print_to_ctty(string, ctty_fd=None):
+    if ctty_fd is None:
+        ctty_fd = get_ctty_fd()
+    if ctty_fd is not None:
+        # TODO: should we raise an exception otherwise?
+        print(string, file=os.fdopen(ctty_fd, 'w'))
+    return ctty_fd
