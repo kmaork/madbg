@@ -61,6 +61,8 @@ class RemoteIPythonDebugger(TerminalPdb, metaclass=LazyInit):
     we use the LazyInit metaclass to allow instantiation before having to actually connect.
     """
 
+    # TODO: this should be a thread safe singleton
+
     def __init__(self, ip, port):
         # TODO: allow returning pty before connecting to client, so we don't have to use LazyInit
         self.on_shutdown = Future()

@@ -40,6 +40,7 @@ def set_trace_on_connect(ip=DEFAULT_IP, port=DEFAULT_PORT):
 
     # TODO: the threading causes errors with the ipython history sqlite db.
     # TODO: this only works on the main thread :(
+    # TODO: allow cancelling that
 
     def new_handler(_, frame):
         signal.signal(DEBUGGER_CONNECTED_SIGNAL, old_handler)
@@ -89,7 +90,7 @@ def _run_py(python_file, run_as_module, argv):
 def run_with_debugging(ip, port, python_file, run_as_module, argv, use_post_mortem=True, use_set_trace=False,
                        debugger=None):
     # TODO: check and test this behavior
-    # TODO: add option for preemptive settrace
+    # TODO: add option for set_trace_on_connect (would have to make the debugger a thread safe singleton, and allow cancelling set_trace_on_connect)
     if debugger is None:
         debugger = RemoteIPythonDebugger(ip, port)
     try:
