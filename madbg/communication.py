@@ -38,8 +38,8 @@ def pipe(pipe_dict):
         set_nonblocking(fd)
     we_done = False
     while not we_done:
-        r, _, _ = select.select(list(pipe_dict), [], [],
-                                0.1)  # TODO: can we understand if the readable event is a connection reset?
+        # TODO: can we understand if the readable event is a connection reset?
+        r, _, _ = select.select(list(pipe_dict), [], [], 0.1)  # TODO: can we remove the timeout?
         for fh in r:
             data = os.read(fh, 1024)
             if not data:

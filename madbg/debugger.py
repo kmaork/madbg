@@ -1,10 +1,12 @@
+import errno
+import select
 from bdb import BdbQuit
 
 from IPython.terminal.debugger import *
 import atexit
 import socket
 import os
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, Future
 from contextlib import contextmanager
 from prompt_toolkit.input.vt100 import Vt100Input
 from prompt_toolkit.output.vt100 import Vt100_Output
@@ -14,12 +16,19 @@ from .communication import pipe, receive_message
 from .utils import LazyInit
 
 
+class ConnectionCancelled(Exception):
+    pass
+
+
 @contextmanager
-def get_client_connection(ip, port):
+def get_client_connection(ip, port, cancelled_future=None):
     server_socket = socket.socket()
     server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, True)
     server_socket.bind((ip, port))
     server_socket.listen(1)
+    while not select.select([server_socket], [], [], 0.1)[0]:
+        if cancelled_future is not None and cancelled_future.done():
+            raise ConnectionCancelled()
     sock, _ = server_socket.accept()
     server_socket.close()
     try:
@@ -29,8 +38,8 @@ def get_client_connection(ip, port):
 
 
 @contextmanager
-def remote_pty(ip, port):
-    with get_client_connection(ip, port) as sock:
+def remote_pty(ip, port, cancelled_future=None):
+    with get_client_connection(ip, port, cancelled_future) as sock:
         # TODO: should we set settings like that, or just write some ansi? https://apple.stackexchange.com/questions/33736/can-a-terminal-window-be-resized-with-a-terminal-command
         term_data = receive_message(sock)
         term_attrs, term_type, term_size = term_data['term_attrs'], term_data['term_type'], term_data['term_size']
@@ -54,12 +63,15 @@ class RemoteIPythonDebugger(TerminalPdb, metaclass=LazyInit):
 
     def __init__(self, ip, port):
         # TODO: allow returning pty before connecting to client, so we don't have to use LazyInit
-        self._remote_pty_ctx_manager = remote_pty(ip, port)
+        self.on_shutdown = Future()
+        self._remote_pty_ctx_manager = remote_pty(ip, port, self.on_shutdown)
+        self._entered_remote_pty_ctx_manager = False
+        atexit.register(self.shutdown)
         # TODO: is this the right way to do this?
         print_to_ctty('Waiting for connection from debugger console on {}:{}'.format(ip, port))
         slave_fd, self.term_type = self._remote_pty_ctx_manager.__enter__()  # TODO: this is pretty ugly
+        self._entered_remote_pty_ctx_manager = True
         # TODO: print that we connected before detaching ctty
-        atexit.register(self.shutdown)
         super(RemoteIPythonDebugger, self).__init__(stdin=os.fdopen(slave_fd, 'r'), stdout=os.fdopen(slave_fd, 'w'))
         self.use_rawinput = True
 
@@ -108,8 +120,16 @@ class RemoteIPythonDebugger(TerminalPdb, metaclass=LazyInit):
         )  # TODO: understand prompt toolkit implementation
 
     def shutdown(self):
-        print('Exiting debugger', file=self.stdout)
-        self._remote_pty_ctx_manager.__exit__(None, None, None)
+        if not self.on_shutdown.done():
+            self.on_shutdown.set_result(None)
+            atexit.unregister(self.shutdown)
+            if self._entered_remote_pty_ctx_manager:
+                try:
+                    print('Exiting debugger', file=self.stdout)
+                except OSError as e:
+                    if e.errno != errno.EBADF:
+                        raise
+                self._remote_pty_ctx_manager.__exit__(None, None, None)
 
     def trace_dispatch(self, frame, event, arg):
         try:
@@ -142,3 +162,5 @@ class RemoteIPythonDebugger(TerminalPdb, metaclass=LazyInit):
 # TODO: support python2? or completely python3
 # TODO: if sys.trace changes (ipdb in a loop), we don't close socket
 # TODO: handle client death
+# TODO: bugs when connecting to debugger twice. Use that to identify remaining state from debugger
+# TODO: add test for debugging twice
