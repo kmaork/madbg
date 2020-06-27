@@ -23,14 +23,13 @@ def connect(ip, port):
                                      allow_extra_args=True))
 @click.option('-i', '--bind_ip', type=str, default=DEFAULT_IP, show_default=True)
 @click.option('-p', '--port', type=int, default=DEFAULT_PORT, show_default=True)
-@click.option('-p', '--port', type=int, default=DEFAULT_PORT, show_default=True)
-@click.option('-n', '--no_post_mortem', is_flag=True, flag_value=True, default=False)
-@click.option('-s', '--use_set_trace', is_flag=True, flag_value=True, default=False)
-@click.option('-m', '--run_as_module', is_flag=True, flag_value=True, default=False)
+@click.option('-n', '--no-post-mortem', is_flag=True, flag_value=True, default=False)
+@click.option('-s', '--use-set-trace', is_flag=True, flag_value=True, default=False)
+@click.option('-m', '--run-as-module', is_flag=True, flag_value=True, default=False)
 @click.argument('py_file', type=str, required=True)
 @click.pass_context
 def run(context, bind_ip, port, run_as_module, py_file, no_post_mortem, use_set_trace):
-    argv = [sys.argv[0]] + context.args
+    argv = [sys.argv[0], *context.args]
     run_with_debugging(bind_ip, port, py_file, run_as_module, argv, not no_post_mortem, use_set_trace)
 
 
