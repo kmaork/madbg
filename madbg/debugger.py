@@ -77,49 +77,58 @@ class RemoteIPythonDebugger(TerminalPdb, metaclass=LazyInit):
         super(RemoteIPythonDebugger, self).__init__(stdin=os.fdopen(slave_fd, 'r'), stdout=os.fdopen(slave_fd, 'w'))
         self.use_rawinput = True
 
-    def pt_init(self):
+    def pt_init(self, pt_session_options=None):
+        """Initialize the prompt session and the prompt loop
+        and store them in self.pt_app and self.pt_loop.
+        
+        Additional keyword arguments for the PromptSession class
+        can be specified in pt_session_options.
         """
-        Copy of super, because we need to add input and output params to PromptSession
-        """
-
-        # TODO: open another PR to ipython, allowing to delete this duplication
+        if pt_session_options is None:
+            pt_session_options = {}
+        
         def get_prompt_tokens():
             return [(Token.Prompt, self.prompt)]
 
         if self._ptcomp is None:
             compl = IPCompleter(shell=self.shell,
-                                namespace={},
-                                global_namespace={},
-                                parent=self.shell,
-                                )
+                                        namespace={},
+                                        global_namespace={},
+                                        parent=self.shell,
+                                       )
+            # add a completer for all the do_ methods
+            methods_names = [m[3:] for m in dir(self) if m.startswith("do_")]
+
+            def gen_comp(self, text):
+                return [m for m in methods_names if m.startswith(text)]
+            import types
+            newcomp = types.MethodType(gen_comp, compl)
+            compl.custom_matchers.insert(0, newcomp)
+            # end add completer.
+
             self._ptcomp = IPythonPTCompleter(compl)
 
-        kb = KeyBindings()
-        supports_suspend = Condition(lambda: hasattr(signal, 'SIGTSTP'))
-        kb.add('c-z', filter=supports_suspend)(suspend_to_bg)
-
-        if self.shell.display_completions == 'readlinelike':
-            kb.add('tab', filter=(has_focus(DEFAULT_BUFFER)
-                                  & ~has_selection
-                                  & vi_insert_mode | emacs_insert_mode
-                                  & ~cursor_in_leading_ws
-                                  ))(display_completions_like_readline)
-
-        self.pt_app = PromptSession(
+        options = dict(
             message=(lambda: PygmentsTokens(get_prompt_tokens())),
             editing_mode=getattr(EditingMode, self.shell.editing_mode.upper()),
-            key_bindings=kb,
+            key_bindings=create_ipython_shortcuts(self.shell),
             history=self.shell.debugger_history,
             completer=self._ptcomp,
             enable_history_search=True,
             mouse_support=self.shell.mouse_support,
             complete_style=self.shell.pt_complete_style,
             style=self.shell.style,
-            inputhook=self.shell.inputhook,
             color_depth=self.shell.color_depth,
             input=Vt100Input(self.stdin),
             output=Vt100_Output.from_pty(self.stdout, self.term_type)
-        )  # TODO: understand prompt toolkit implementation
+        )
+
+        if not PTK3:
+            options['inputhook'] = self.shell.inputhook
+        options = options.update(pt_session_options)
+        self.pt_loop = asyncio.new_event_loop()
+        self.pt_app = PromptSession(**options)
+            
 
     def shutdown(self):
         if not self.on_shutdown.done():
