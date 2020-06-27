@@ -71,10 +71,7 @@ madbg connect A.B.C.D 1337
 ```
 ## Platforms
 
-Currently, madbg doesn't support windows and Python 2, but it's hopefully not far from both.
-
-Tested on linux with Python 3.
-
+Madbg supports linux with python>3.7.
 
 ## Possible effects
 
