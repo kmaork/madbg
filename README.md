@@ -71,7 +71,7 @@ madbg connect A.B.C.D 1337
 ```
 ## Platforms
 
-Madbg supports linux with python>3.7.
+Madbg supports linux with python>=3.7.
 
 ## Possible effects
 

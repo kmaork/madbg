@@ -1,15 +1,14 @@
 import os
-import runpy
 import signal
 import sys
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from pdb import Restart
-from contextlib import contextmanager, nullcontext
 from threading import Event
 
 from .consts import DEFAULT_IP, DEFAULT_PORT
-from .debugger import RemoteIPythonDebugger, ConnectionCancelled
+from .debugger import RemoteIPythonDebugger
+from .utils import ConnectionCancelled
 
 DEBUGGER_CONNECTED_SIGNAL = signal.SIGUSR1
 
@@ -67,8 +66,7 @@ def run_with_debugging(ip, port, python_file, run_as_module, argv, use_post_mort
     if debugger is None:
         debugger = RemoteIPythonDebugger(ip, port)
     try:
-        with debugger.debug(check_debugging_global=True) if use_set_trace else nullcontext():
-            debugger.run_py(python_file, run_as_module, argv)
+        debugger.run_py(python_file, run_as_module, argv, set_trace=use_set_trace)
     except Restart:
         print("Restarting", python_file, "with arguments:", file=debugger.stdout)
         print("\t" + " ".join(argv), file=debugger.stdout)

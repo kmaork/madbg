@@ -1,66 +1,16 @@
 import errno
 import runpy
-import select
-from bdb import BdbQuit
-
-from IPython.terminal.debugger import *
 import atexit
-import socket
 import os
-from concurrent.futures import ThreadPoolExecutor, Future
-from contextlib import contextmanager
+from bdb import BdbQuit
+from IPython.terminal.debugger import *
+from concurrent.futures import Future
+from contextlib import contextmanager, nullcontext
 from prompt_toolkit.input.vt100 import Vt100Input
 from prompt_toolkit.output.vt100 import Vt100_Output
 
-from .tty_utils import set_ctty, resize_terminal, modify_terminal, open_pty, print_to_ctty
-from .communication import pipe, receive_message
-
-
-class ConnectionCancelled(Exception):
-    pass
-
-
-@contextmanager
-def preserve_sys_state():
-    sys_argv = sys.argv[:]
-    sys_path = sys.path[:]
-    try:
-        yield
-    finally:
-        sys.argv = sys_argv
-        sys.path = sys_path
-
-
-@contextmanager
-def get_client_connection(ip, port, cancelled_future=None):
-    server_socket = socket.socket()
-    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, True)
-    server_socket.bind((ip, port))
-    server_socket.listen(1)
-    while not select.select([server_socket], [], [], 0.1)[0]:
-        if cancelled_future is not None and cancelled_future.done():
-            raise ConnectionCancelled()
-    sock, _ = server_socket.accept()
-    server_socket.close()
-    try:
-        yield sock.fileno()
-    finally:
-        sock.close()
-
-
-@contextmanager
-def remote_pty(ip, port, cancelled_future=None):
-    with get_client_connection(ip, port, cancelled_future) as sock:
-        # TODO: should we set settings like that, or just write some ansi? https://apple.stackexchange.com/questions/33736/can-a-terminal-window-be-resized-with-a-terminal-command
-        term_data = receive_message(sock)
-        term_attrs, term_type, term_size = term_data['term_attrs'], term_data['term_type'], term_data['term_size']
-        # TODO: what is the correct term type? the pty or the remote tty?
-        with open_pty() as (master_fd, slave_fd):
-            resize_terminal(slave_fd, term_size[0], term_size[1])
-            modify_terminal(slave_fd, term_attrs)
-            with set_ctty(slave_fd):
-                ThreadPoolExecutor(1).submit(pipe, {sock: master_fd, master_fd: sock})  # TODO: join the thread sometime
-                yield slave_fd, term_type
+from .utils import preserve_sys_state, remote_pty
+from .tty_utils import print_to_ctty
 
 
 class RemoteIPythonDebugger(TerminalPdb):
@@ -179,17 +129,18 @@ class RemoteIPythonDebugger(TerminalPdb):
             print('Resuming program, press Ctrl-C to relaunch debugger. Use q to exit.', file=self.stdout)
         return super().do_continue(arg)
 
-    def run_py(self, python_file, run_as_module, argv):
+    def run_py(self, python_file, run_as_module, argv, set_trace=False):
         run_name = '__main__'
         globals = {self.DEBUGGING_GLOBAL: True}
         with preserve_sys_state():
             sys.argv = argv
             if not run_as_module:
                 sys.path[0] = os.path.dirname(python_file)
-            if run_as_module:
-                runpy.run_module(python_file, alter_sys=True, run_name=run_name, init_globals=globals)
-            else:
-                runpy.run_path(python_file, run_name=run_name, init_globals=globals)
+            with self.debug(check_debugging_global=True) if set_trace else nullcontext():
+                if run_as_module:
+                    runpy.run_module(python_file, alter_sys=True, run_name=run_name, init_globals=globals)
+                else:
+                    runpy.run_path(python_file, run_name=run_name, init_globals=globals)
 
     @contextmanager
     def debug(self, check_debugging_global=False):
