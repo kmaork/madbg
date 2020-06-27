@@ -125,7 +125,7 @@ class RemoteIPythonDebugger(TerminalPdb, metaclass=LazyInit):
 
         if not PTK3:
             options['inputhook'] = self.shell.inputhook
-        options = options.update(pt_session_options)
+        options.update(pt_session_options)
         self.pt_loop = asyncio.new_event_loop()
         self.pt_app = PromptSession(**options)
             
