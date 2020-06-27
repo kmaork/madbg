@@ -9,7 +9,9 @@ from contextlib import contextmanager
 from .communication import pipe, send_message
 from .consts import DEFAULT_IP, DEFAULT_PORT
 
-tty_handle = os.open(os.ctermid(), os.O_RDWR)
+
+def get_tty_handle():
+    return os.open(os.ctermid(), os.O_RDWR)
 
 
 # TODO: if server fails to die, we have no control of the local terminal :(
@@ -34,6 +36,7 @@ def promise_cleanup(func, cleanup):
 
 
 def prepare_terminal():
+    tty_handle = get_tty_handle()
     old_tty_mode = termios.tcgetattr(tty_handle)
     set_raw = partial(setraw, tty_handle, termios.TCSANOW)
     cleanup = partial(termios.tcsetattr, tty_handle, termios.TCSANOW, old_tty_mode)
@@ -54,6 +57,7 @@ def connect_to_server(ip, port):
 def connect_to_debugger(ip=DEFAULT_IP, port=DEFAULT_PORT):
     # TODO: allow passing timeout (that can be infinite)
     with connect_to_server(ip, port) as socket:
+        tty_handle = get_tty_handle()
         term_size = os.get_terminal_size(tty_handle)
         term_data = dict(term_attrs=termios.tcgetattr(tty_handle),
                          # prompt toolkit will receive this string, and it can be 'unknown'
