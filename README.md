@@ -1,4 +1,5 @@
 # madbg
+![](https://github.com/kmaork/madbg/workflows/Python%20package/badge.svg)
 A remote python debugger based on the IPython debugger (like ipdb) featuring a full remote TTY!
 
 madbg:
