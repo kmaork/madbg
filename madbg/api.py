@@ -5,12 +5,11 @@ import sys
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from pdb import Restart
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from threading import Event
 
 from .consts import DEFAULT_IP, DEFAULT_PORT
 from .debugger import RemoteIPythonDebugger, ConnectionCancelled
-from .utils import LazyInit
 
 DEBUGGER_CONNECTED_SIGNAL = signal.SIGUSR1
 
@@ -23,7 +22,6 @@ def _wait_for_connection_and_send_signal(ip, port, signal_handler_ready):
     signal_handler_ready.wait()
     try:
         debugger = RemoteIPythonDebugger(ip, port)
-        LazyInit.initialize_lazy_object(debugger)
         os.kill(0, DEBUGGER_CONNECTED_SIGNAL)
         return debugger
     except:
@@ -60,43 +58,17 @@ def set_trace_on_connect(ip=DEFAULT_IP, port=DEFAULT_PORT):
 
 def post_mortem(ip=DEFAULT_IP, port=DEFAULT_PORT, traceback=None):
     traceback = traceback or sys.exc_info()[2] or sys.last_traceback
-    debugger = RemoteIPythonDebugger(ip, port)
-    debugger.post_mortem(traceback)
-
-
-@contextmanager
-def _preserve_sys_state():
-    sys_argv = sys.argv[:]
-    sys_path = sys.path[:]
-    try:
-        yield
-    finally:
-        sys.argv = sys_argv
-        sys.path = sys_path
-
-
-def _run_py(python_file, run_as_module, argv):
-    run_name = '__main__'
-    with _preserve_sys_state():
-        sys.argv = argv
-        if not run_as_module:
-            sys.path[0] = os.path.dirname(python_file)
-        if run_as_module:
-            runpy.run_module(python_file, alter_sys=True, run_name=run_name)
-        else:
-            runpy.run_path(python_file, run_name=run_name)
+    RemoteIPythonDebugger(ip, port).post_mortem(traceback)
 
 
 def run_with_debugging(ip, port, python_file, run_as_module, argv, use_post_mortem=True, use_set_trace=False,
                        debugger=None):
     # TODO: check and test this behavior
-    # TODO: add option for set_trace_on_connect (would have to make the debugger a thread safe singleton, and allow cancelling set_trace_on_connect)
     if debugger is None:
         debugger = RemoteIPythonDebugger(ip, port)
     try:
-        if use_set_trace:
-            debugger.set_sys_trace()
-        _run_py(python_file, run_as_module, argv)
+        with debugger.debug(check_debugging_global=True) if use_set_trace else nullcontext():
+            debugger.run_py(python_file, run_as_module, argv)
     except Restart:
         print("Restarting", python_file, "with arguments:", file=debugger.stdout)
         print("\t" + " ".join(argv), file=debugger.stdout)

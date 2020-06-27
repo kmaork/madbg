@@ -1,4 +1,5 @@
 import errno
+import runpy
 import select
 from bdb import BdbQuit
 
@@ -13,11 +14,21 @@ from prompt_toolkit.output.vt100 import Vt100_Output
 
 from .tty_utils import set_ctty, resize_terminal, modify_terminal, open_pty, print_to_ctty
 from .communication import pipe, receive_message
-from .utils import LazyInit
 
 
 class ConnectionCancelled(Exception):
     pass
+
+
+@contextmanager
+def preserve_sys_state():
+    sys_argv = sys.argv[:]
+    sys_path = sys.path[:]
+    try:
+        yield
+    finally:
+        sys.argv = sys_argv
+        sys.path = sys_path
 
 
 @contextmanager
@@ -52,19 +63,18 @@ def remote_pty(ip, port, cancelled_future=None):
                 yield slave_fd, term_type
 
 
-class RemoteIPythonDebugger(TerminalPdb, metaclass=LazyInit):
+class RemoteIPythonDebugger(TerminalPdb):
     """
     Initializes IPython's TerminalPdb with stdio from a pty.
     As TerminalPdb uses prompt_toolkit instead of the builtin input(),
     we can use it to allow line editing and tab completion for files other than stdio (in this case, the pty).
     Because we need to provide the stdin and stdout params to the __init__, and they require a connection to the client,
-    we use the LazyInit metaclass to allow instantiation before having to actually connect.
     """
+    DEBUGGING_GLOBAL = 'DEBUGGING_WITH_MADBG'
 
     # TODO: this should be a thread safe singleton
 
     def __init__(self, ip, port):
-        # TODO: allow returning pty before connecting to client, so we don't have to use LazyInit
         self.on_shutdown = Future()
         self._remote_pty_ctx_manager = remote_pty(ip, port, self.on_shutdown)
         self._entered_remote_pty_ctx_manager = False
@@ -74,7 +84,7 @@ class RemoteIPythonDebugger(TerminalPdb, metaclass=LazyInit):
         slave_fd, self.term_type = self._remote_pty_ctx_manager.__enter__()  # TODO: this is pretty ugly
         self._entered_remote_pty_ctx_manager = True
         # TODO: print that we connected before detaching ctty
-        super(RemoteIPythonDebugger, self).__init__(stdin=os.fdopen(slave_fd, 'r'), stdout=os.fdopen(slave_fd, 'w'))
+        super().__init__(stdin=os.fdopen(slave_fd, 'r'), stdout=os.fdopen(slave_fd, 'w'))
         self.use_rawinput = True
 
     def pt_init(self, pt_session_options=None):
@@ -86,21 +96,22 @@ class RemoteIPythonDebugger(TerminalPdb, metaclass=LazyInit):
         """
         if pt_session_options is None:
             pt_session_options = {}
-        
+
         def get_prompt_tokens():
             return [(Token.Prompt, self.prompt)]
 
         if self._ptcomp is None:
             compl = IPCompleter(shell=self.shell,
-                                        namespace={},
-                                        global_namespace={},
-                                        parent=self.shell,
-                                       )
+                                namespace={},
+                                global_namespace={},
+                                parent=self.shell,
+                                )
             # add a completer for all the do_ methods
             methods_names = [m[3:] for m in dir(self) if m.startswith("do_")]
 
             def gen_comp(self, text):
                 return [m for m in methods_names if m.startswith(text)]
+
             import types
             newcomp = types.MethodType(gen_comp, compl)
             compl.custom_matchers.insert(0, newcomp)
@@ -128,7 +139,6 @@ class RemoteIPythonDebugger(TerminalPdb, metaclass=LazyInit):
         options.update(pt_session_options)
         self.pt_loop = asyncio.new_event_loop()
         self.pt_app = PromptSession(**options)
-            
 
     def shutdown(self):
         if not self.on_shutdown.done():
@@ -142,9 +152,16 @@ class RemoteIPythonDebugger(TerminalPdb, metaclass=LazyInit):
                         raise
                 self._remote_pty_ctx_manager.__exit__(None, None, None)
 
-    def trace_dispatch(self, frame, event, arg):
+    def trace_dispatch(self, frame, event, arg, check_debugging_global=False):
+        if check_debugging_global:
+            # print(frame.f_code.co_filename, self.DEBUGGING_GLOBAL in frame.f_globals, '\r')
+            # if frame.f_code.co_filename == '/tmp/lol.py':
+            #     print(frame.f_globals, '\r')
+            if self.DEBUGGING_GLOBAL in frame.f_globals:
+                self.set_trace(frame)
+            return
         try:
-            super(RemoteIPythonDebugger, self).trace_dispatch(frame, event, arg)
+            super().trace_dispatch(frame, event, arg)
         except BdbQuit:
             self.quitting = True
         except:
@@ -153,9 +170,6 @@ class RemoteIPythonDebugger(TerminalPdb, metaclass=LazyInit):
         if self.quitting:
             self.shutdown()
 
-    def set_sys_trace(self):
-        sys.settrace(self.trace_dispatch)
-
     def post_mortem(self, traceback):
         self.reset()
         self.interaction(None, traceback)
@@ -163,7 +177,31 @@ class RemoteIPythonDebugger(TerminalPdb, metaclass=LazyInit):
     def do_continue(self, arg):
         if not self.nosigint:
             print('Resuming program, press Ctrl-C to relaunch debugger. Use q to exit.', file=self.stdout)
-        return super(RemoteIPythonDebugger, self).do_continue(arg)
+        return super().do_continue(arg)
+
+    def run_py(self, python_file, run_as_module, argv):
+        run_name = '__main__'
+        globals = {self.DEBUGGING_GLOBAL: True}
+        with preserve_sys_state():
+            sys.argv = argv
+            if not run_as_module:
+                sys.path[0] = os.path.dirname(python_file)
+            if run_as_module:
+                runpy.run_module(python_file, alter_sys=True, run_name=run_name, init_globals=globals)
+            else:
+                runpy.run_path(python_file, run_name=run_name, init_globals=globals)
+
+    @contextmanager
+    def debug(self, check_debugging_global=False):
+        self.reset()
+        sys.settrace(lambda *args: self.trace_dispatch(*args, check_debugging_global=check_debugging_global))
+        try:
+            yield
+        except BdbQuit:
+            pass
+        finally:
+            self.quitting = True
+            sys.settrace(None)
 
     do_c = do_cont = do_continue
 
