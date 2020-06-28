@@ -50,8 +50,8 @@ def set_trace_on_connect(ip=DEFAULT_IP, port=DEFAULT_PORT):
             debugger.set_trace(frame)
 
     signal_handler_ready = Event()
-    debugger_future = ThreadPoolExecutor(1).submit(_wait_for_connection_and_send_signal, ip, port, signal_handler_ready)
     old_handler = signal.signal(DEBUGGER_CONNECTED_SIGNAL, new_handler)
+    debugger_future = ThreadPoolExecutor(1).submit(_wait_for_connection_and_send_signal, ip, port, signal_handler_ready)
     signal_handler_ready.set()
 
 
@@ -80,6 +80,8 @@ def run_with_debugging(ip, port, python_file, run_as_module, argv, use_post_mort
         if use_post_mortem:
             print(traceback.format_exc(), file=debugger.stdout)
             debugger.post_mortem(sys.exc_info()[2])
+        else:
+            raise
     else:
         print('{} finished running successfully'.format(python_file), file=debugger.stdout)
 

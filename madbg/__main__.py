@@ -1,6 +1,8 @@
 import sys
 
 import click
+from click import ClickException
+
 from madbg.client import connect_to_debugger
 from madbg.consts import DEFAULT_IP, DEFAULT_PORT
 from madbg import run_with_debugging
@@ -15,7 +17,10 @@ def cli():
 @click.argument('ip', type=str, default=DEFAULT_IP)
 @click.argument('port', type=int, default=DEFAULT_PORT)
 def connect(ip, port):
-    connect_to_debugger(ip, port)
+    try:
+        connect_to_debugger(ip, port)
+    except ConnectionRefusedError:
+        raise ClickException('Connection refused :(')
 
 
 @click.command(context_settings=dict(ignore_unknown_options=True,

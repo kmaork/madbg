@@ -30,13 +30,22 @@ def make_session_leader():
     os.setsid()
 
 
+@contextmanager
+def ignore_signal(signal_num: int):
+    old = signal.signal(signal_num, signal.SIG_IGN)
+    try:
+        yield
+    finally:
+        signal.signal(signal_num, old)
+
+
 def detach_ctty(ctty_fd):
     # TODO: should we handle sigcont?
     # TODO: will children receive sighup as well?
     # TODO: why are we receiving sighup multiple times?
     # When a process detaches from a tty, it is sent the signals SIGHUP and then SIGCONT
-    signal.signal(signal.SIGHUP, lambda *a: None)
-    fcntl.ioctl(ctty_fd, termios.TIOCNOTTY)
+    with ignore_signal(signal.SIGHUP):
+        fcntl.ioctl(ctty_fd, termios.TIOCNOTTY)
 
 
 def attach_ctty(fd):

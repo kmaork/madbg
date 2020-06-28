@@ -51,7 +51,8 @@ def remote_pty(ip, port, cancelled_future=None):
             resize_terminal(slave_fd, term_size[0], term_size[1])
             modify_terminal(slave_fd, term_attrs)
             with set_ctty(slave_fd):
-                ThreadPoolExecutor(1).submit(pipe, {sock: master_fd, master_fd: sock})  # TODO: join the thread sometime
+                # TODO: join the thread sometime
+                ThreadPoolExecutor(1).submit(pipe, {sock: master_fd, master_fd: sock})
                 yield slave_fd, term_type
 
 
