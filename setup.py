@@ -8,7 +8,7 @@ setup(
     classifiers=['Operating System :: POSIX :: Linux'],  # TODO: we probably support more than just linux
     install_requires=['click',
                       # 'ipython>=7.6.0',
-                      'IPython @ git+ssh://git@github.com/ipython/ipython.git@cc9da29abf59e877e7a9aff2558ddc15604c324b#egg=IPython',
+                      'IPython @ git+ssh://git@github.com/ipython/ipython.git#egg=IPython',
                       'prompt_toolkit'],
     # TODO: merge ipython patch to python2 branch, allowing support of python 2?
     entry_points=dict(

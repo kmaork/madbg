@@ -9,7 +9,8 @@ STDOUT_FILENO = 1
 STDERR_FILENO = 2
 
 
-def enter_pty(attach_as_ctty, connect_output_to_pty=False):
+def enter_pty(attach_as_ctty, connect_output_to_pty=True):
+    # TODO: should be a contextmanager. Why not use utils?
     os.setsid()
     master_fd, slave_fd = pty.openpty()
     if attach_as_ctty:

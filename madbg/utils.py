@@ -1,6 +1,7 @@
 import atexit
 import socket
 import sys
+from concurrent.futures.thread import ThreadPoolExecutor
 from contextlib import contextmanager, ExitStack
 
 
@@ -35,3 +36,13 @@ def use_context(context_manager, exit_stack=None):
         atexit.register(exit_stack.close)
     context_value = exit_stack.enter_context(context_manager)
     return context_value, exit_stack
+
+
+@contextmanager
+def run_thread(func, *args, **kwargs):
+    with ThreadPoolExecutor(1) as executor:
+        future = executor.submit(func, *args, **kwargs)
+        try:
+            yield future
+        finally:
+            future.result()

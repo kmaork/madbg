@@ -30,15 +30,31 @@ def blocking_read(fd, n):
 
 def pipe(pipe_dict):
     """ Pass data between the fds until at least on of each fd pair is closed. """
+    # TODO: WTF
     pipe_dict = dict(pipe_dict)
     reverse_pipe_dict = defaultdict(list)
     for k, v in pipe_dict.items():
         reverse_pipe_dict[v].append(k)
     for fd in pipe_dict:
-        set_nonblocking(fd)
+        set_nonblocking(fd)  # TODO: just assert non blocking
+    invalid_fds = []
     while pipe_dict:
-        readable_fds, _, _ = select.select(list(pipe_dict), [], [])
+        for fd in (*pipe_dict.keys(), *pipe_dict.values()):
+            try:
+                os.fstat(fd)
+            except OSError:
+                invalid_fds.append(fd)
+                try:
+                    if fd in pipe_dict:
+                        os.write(pipe_dict[fd], os.read(fd, 1024))
+                except OSError:
+                    pass
+        for fd in invalid_fds:
+            pipe_dict.pop(fd, None)
+            for writing_fd in reverse_pipe_dict[fd]:
+                pipe_dict.pop(writing_fd, None)
         invalid_fds = []
+        readable_fds, _, _ = select.select(list(pipe_dict), [], [], 0.1)
         for fd in readable_fds:
             try:
                 data = os.read(fd, 1024)
@@ -51,10 +67,6 @@ def pipe(pipe_dict):
                     os.write(pipe_dict[fd], data)
                 except OSError:
                     invalid_fds.append(pipe_dict[fd])
-        for fd in invalid_fds:
-            pipe_dict.pop(fd, None)
-            for writing_fd in reverse_pipe_dict[fd]:
-                pipe_dict.pop(writing_fd, None)
 
 
 def send_message(sock, obj):

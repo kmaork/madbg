@@ -104,11 +104,7 @@ def open_pty():
     finally:
         with ignore_signal(signal.SIGHUP):
             os.close(master_fd)
-            try:
-                os.close(slave_fd)
-            except OSError:
-                # I think closing the master invalidates the slave
-                pass
+            os.close(slave_fd)
 
 
 def print_to_ctty(string, ctty_fd=None):

@@ -1,13 +1,16 @@
 import runpy
 import os
+import sys
+import traceback
 from concurrent.futures.thread import ThreadPoolExecutor
 from bdb import BdbQuit
-from IPython.terminal.debugger import *
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager, nullcontext, ExitStack
+
+from IPython.terminal.debugger import TerminalPdb
 from prompt_toolkit.input.vt100 import Vt100Input
 from prompt_toolkit.output.vt100 import Vt100_Output
 
-from .utils import preserve_sys_state, get_client_connection, use_context
+from .utils import preserve_sys_state, get_client_connection, use_context, run_thread
 from .tty_utils import print_to_ctty, open_pty, resize_terminal, modify_terminal, set_ctty
 from .communication import receive_message, pipe
 
@@ -24,62 +27,10 @@ class RemoteIPythonDebugger(TerminalPdb):
     # TODO: this should be a thread safe singleton
 
     def __init__(self, stdin, stdout, term_type):
-        self.term_type = term_type
-        super().__init__(stdin=stdin, stdout=stdout)
+        term_input = Vt100Input(stdin)
+        term_output = Vt100_Output.from_pty(stdout, term_type)
+        super().__init__(pt_session_options=dict(input=term_input, output=term_output), stdin=stdin, stdout=stdout)
         self.use_rawinput = True
-
-    def pt_init(self, pt_session_options=None):
-        """Initialize the prompt session and the prompt loop
-        and store them in self.pt_app and self.pt_loop.
-        
-        Additional keyword arguments for the PromptSession class
-        can be specified in pt_session_options.
-        """
-        if pt_session_options is None:
-            pt_session_options = {}
-
-        def get_prompt_tokens():
-            return [(Token.Prompt, self.prompt)]
-
-        if self._ptcomp is None:
-            compl = IPCompleter(shell=self.shell,
-                                namespace={},
-                                global_namespace={},
-                                parent=self.shell,
-                                )
-            # add a completer for all the do_ methods
-            methods_names = [m[3:] for m in dir(self) if m.startswith("do_")]
-
-            def gen_comp(self, text):
-                return [m for m in methods_names if m.startswith(text)]
-
-            import types
-            newcomp = types.MethodType(gen_comp, compl)
-            compl.custom_matchers.insert(0, newcomp)
-            # end add completer.
-
-            self._ptcomp = IPythonPTCompleter(compl)
-
-        options = dict(
-            message=(lambda: PygmentsTokens(get_prompt_tokens())),
-            editing_mode=getattr(EditingMode, self.shell.editing_mode.upper()),
-            key_bindings=create_ipython_shortcuts(self.shell),
-            history=self.shell.debugger_history,
-            completer=self._ptcomp,
-            enable_history_search=True,
-            mouse_support=self.shell.mouse_support,
-            complete_style=self.shell.pt_complete_style,
-            style=self.shell.style,
-            color_depth=self.shell.color_depth,
-            input=Vt100Input(self.stdin),
-            output=Vt100_Output.from_pty(self.stdout, self.term_type)
-        )
-
-        if not PTK3:
-            options['inputhook'] = self.shell.inputhook
-        options.update(pt_session_options)
-        self.pt_loop = asyncio.new_event_loop()
-        self.pt_app = PromptSession(**options)
 
     def trace_dispatch(self, frame, event, arg, check_debugging_global=False, done_callback=None):
         if check_debugging_global:
@@ -159,20 +110,21 @@ class RemoteIPythonDebugger(TerminalPdb):
         term_data = receive_message(sock)
         term_attrs, term_type, term_size = term_data['term_attrs'], term_data['term_type'], term_data['term_size']
         # TODO: what is the correct term type? the pty or the remote tty?
-        with open_pty() as (master_fd, slave_fd):
+        with ExitStack() as exit_stack, open_pty() as (master_fd, slave_fd):
             resize_terminal(slave_fd, term_size[0], term_size[1])
             modify_terminal(slave_fd, term_attrs)
             set_ctty(slave_fd)
             # TODO: join the thread sometime
-            with ThreadPoolExecutor(1) as exec:
-                future = exec.submit(pipe, {sock: master_fd, master_fd: sock})
-                slave_reader = os.fdopen(slave_fd, 'r')
-                slave_writer = os.fdopen(slave_fd, 'w')
+            exit_stack.enter_context(run_thread(pipe, {sock: master_fd, master_fd: sock}))
+            slave_reader = os.fdopen(slave_fd, 'r')
+            slave_writer = os.fdopen(slave_fd, 'w')
+            try:
                 yield RemoteIPythonDebugger(slave_reader, slave_writer, term_type)
+            except Exception:
+                print(traceback.format_exc(), file=slave_writer)
+                raise
+            finally:
                 print('Closing connection', file=slave_writer)
-                os.close(slave_fd)
-                future.result()
-        future.result()
 
     @classmethod
     @contextmanager

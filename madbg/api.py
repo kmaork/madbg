@@ -70,9 +70,8 @@ def run_with_debugging(ip, port, python_file, run_as_module, argv, use_post_mort
             print("\t" + " ".join(argv), file=debugger.stdout)
             return run_with_debugging(ip, port, python_file, run_as_module, argv, use_post_mortem, use_set_trace,
                                       debugger)
-        except SystemExit:
-            print("The program exited via sys.exit(). Exit status:", end=' ', file=debugger.stdout)
-            print(sys.exc_info()[1], file=debugger.stdout)
+        except SystemExit as e:
+            print(f"The program exited via sys.exit(). Exit status: {e.code}", end=' ', file=debugger.stdout)
         except SyntaxError:
             raise
         except:
