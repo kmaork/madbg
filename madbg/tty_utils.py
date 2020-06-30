@@ -71,16 +71,9 @@ def detach_current_ctty():
         os.close(ctty_fd)
 
 
-@contextmanager
 def set_ctty(fd):
     detach_current_ctty()
     attach_ctty(fd)
-    try:
-        yield
-    finally:
-        # TODO: are we attached to a tty originally? because bash is in a different process group,
-        # and it is probably attached, so does it mean we aren't? if we are, we should reattach
-        detach_ctty(fd)
 
 
 def resize_terminal(fd, rows, cols):
@@ -109,8 +102,13 @@ def open_pty():
     try:
         yield master_fd, slave_fd
     finally:
-        os.close(master_fd)
-        os.close(slave_fd)
+        with ignore_signal(signal.SIGHUP):
+            os.close(master_fd)
+            try:
+                os.close(slave_fd)
+            except OSError:
+                # I think closing the master invalidates the slave
+                pass
 
 
 def print_to_ctty(string, ctty_fd=None):

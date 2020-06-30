@@ -13,7 +13,7 @@ def cli():
     pass
 
 
-@click.command()
+@cli.command()
 @click.argument('ip', type=str, default=DEFAULT_IP)
 @click.argument('port', type=int, default=DEFAULT_PORT)
 def connect(ip, port):
@@ -23,9 +23,9 @@ def connect(ip, port):
         raise ClickException('Connection refused :(')
 
 
-@click.command(context_settings=dict(ignore_unknown_options=True,
-                                     allow_interspersed_args=False,
-                                     allow_extra_args=True))
+@cli.command(context_settings=dict(ignore_unknown_options=True,
+                                   allow_interspersed_args=False,
+                                   allow_extra_args=True))
 @click.option('-i', '--bind_ip', type=str, default=DEFAULT_IP, show_default=True)
 @click.option('-p', '--port', type=int, default=DEFAULT_PORT, show_default=True)
 @click.option('-n', '--no-post-mortem', is_flag=True, flag_value=True, default=False)
@@ -38,6 +38,5 @@ def run(context, bind_ip, port, run_as_module, py_file, no_post_mortem, use_set_
     run_with_debugging(bind_ip, port, py_file, run_as_module, argv, not no_post_mortem, use_set_trace)
 
 
-cli.add_command(connect)
-cli.add_command(run)
-cli()
+if __name__ == '__main__':
+    cli()

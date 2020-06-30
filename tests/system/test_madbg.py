@@ -5,7 +5,7 @@ from pytest import mark
 
 from .utils import enter_pty, run_in_process
 
-JOIN_TIMEOUT = 5
+JOIN_TIMEOUT = 10
 
 
 def run_set_trace_process(start_with_ctty, port) -> bool:

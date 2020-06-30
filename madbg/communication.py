@@ -3,6 +3,7 @@ import select
 import fcntl
 import os
 import struct
+from collections import defaultdict
 from io import BytesIO
 
 MESSAGE_LENGTH_FMT = 'I'
@@ -28,24 +29,32 @@ def blocking_read(fd, n):
 
 
 def pipe(pipe_dict):
-    """
-    Pass data between fds until one of the source fds is closed.
-    :param pipe_dict: A dict mapping between source fds and dst fds
-    """
-    # TODO: can we use splice, or ebpf?
-    # TODO: should the api just receive two fds? should we check if the dest socket was closed as well?
+    """ Pass data between the fds until at least on of each fd pair is closed. """
+    pipe_dict = dict(pipe_dict)
+    reverse_pipe_dict = defaultdict(list)
+    for k, v in pipe_dict.items():
+        reverse_pipe_dict[v].append(k)
     for fd in pipe_dict:
         set_nonblocking(fd)
-    we_done = False
-    while not we_done:
-        # TODO: can we understand if the readable event is a connection reset?
-        r, _, _ = select.select(list(pipe_dict), [], [], 0.1)  # TODO: can we remove the timeout?
-        for fh in r:
-            data = os.read(fh, 1024)
-            if not data:
-                we_done = True
-                break
-            os.write(pipe_dict[fh], data)
+    while pipe_dict:
+        readable_fds, _, _ = select.select(list(pipe_dict), [], [])
+        invalid_fds = []
+        for fd in readable_fds:
+            try:
+                data = os.read(fd, 1024)
+            except OSError:
+                invalid_fds.append(pipe_dict[fd])
+            else:
+                if not data:
+                    invalid_fds.append(fd)
+                try:
+                    os.write(pipe_dict[fd], data)
+                except OSError:
+                    invalid_fds.append(pipe_dict[fd])
+        for fd in invalid_fds:
+            pipe_dict.pop(fd, None)
+            for writing_fd in reverse_pipe_dict[fd]:
+                pipe_dict.pop(writing_fd, None)
 
 
 def send_message(sock, obj):

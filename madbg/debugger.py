@@ -1,16 +1,15 @@
-import errno
 import runpy
-import atexit
 import os
+from concurrent.futures.thread import ThreadPoolExecutor
 from bdb import BdbQuit
 from IPython.terminal.debugger import *
-from concurrent.futures import Future
 from contextlib import contextmanager, nullcontext
 from prompt_toolkit.input.vt100 import Vt100Input
 from prompt_toolkit.output.vt100 import Vt100_Output
 
-from .utils import preserve_sys_state, remote_pty
-from .tty_utils import print_to_ctty
+from .utils import preserve_sys_state, get_client_connection, use_context
+from .tty_utils import print_to_ctty, open_pty, resize_terminal, modify_terminal, set_ctty
+from .communication import receive_message, pipe
 
 
 class RemoteIPythonDebugger(TerminalPdb):
@@ -24,17 +23,9 @@ class RemoteIPythonDebugger(TerminalPdb):
 
     # TODO: this should be a thread safe singleton
 
-    def __init__(self, ip, port):
-        self.on_shutdown = Future()
-        self._remote_pty_ctx_manager = remote_pty(ip, port, self.on_shutdown)
-        self._entered_remote_pty_ctx_manager = False
-        atexit.register(self.shutdown)
-        # TODO: is this the right way to do this?
-        print_to_ctty('Waiting for connection from debugger console on {}:{}'.format(ip, port))
-        slave_fd, self.term_type = self._remote_pty_ctx_manager.__enter__()  # TODO: this is pretty ugly
-        self._entered_remote_pty_ctx_manager = True
-        # TODO: print that we connected before detaching ctty
-        super().__init__(stdin=os.fdopen(slave_fd, 'r'), stdout=os.fdopen(slave_fd, 'w'))
+    def __init__(self, stdin, stdout, term_type):
+        self.term_type = term_type
+        super().__init__(stdin=stdin, stdout=stdout)
         self.use_rawinput = True
 
     def pt_init(self, pt_session_options=None):
@@ -90,35 +81,33 @@ class RemoteIPythonDebugger(TerminalPdb):
         self.pt_loop = asyncio.new_event_loop()
         self.pt_app = PromptSession(**options)
 
-    def shutdown(self):
-        if not self.on_shutdown.done():
-            self.on_shutdown.set_result(None)
-            atexit.unregister(self.shutdown)
-            if self._entered_remote_pty_ctx_manager:
-                try:
-                    print('Exiting debugger', file=self.stdout)
-                except OSError as e:
-                    if e.errno != errno.EBADF:
-                        raise
-                self._remote_pty_ctx_manager.__exit__(None, None, None)
-
-    def trace_dispatch(self, frame, event, arg, check_debugging_global=False):
+    def trace_dispatch(self, frame, event, arg, check_debugging_global=False, done_callback=None):
         if check_debugging_global:
-            # print(frame.f_code.co_filename, self.DEBUGGING_GLOBAL in frame.f_globals, '\r')
-            # if frame.f_code.co_filename == '/tmp/lol.py':
-            #     print(frame.f_globals, '\r')
             if self.DEBUGGING_GLOBAL in frame.f_globals:
                 self.set_trace(frame)
-            return
+            else:
+                return
+        bdb_quit = False
         try:
             super().trace_dispatch(frame, event, arg)
         except BdbQuit:
-            self.quitting = True
-        except:
-            self.shutdown()
+            bdb_quit = True
             raise
-        if self.quitting:
-            self.shutdown()
+        finally:
+            if (done_callback is not None) and (self.quitting or bdb_quit):
+                done_callback()
+
+    def set_trace(self, frame=None, done_callback=None):
+        td = lambda *args: self.trace_dispatch(*args, done_callback=done_callback)
+        if frame is None:
+            frame = sys._getframe().f_back
+        self.reset()
+        while frame:
+            frame.f_trace = td
+            self.botframe = frame
+            frame = frame.f_back
+        self.set_step()
+        sys.settrace(td)
 
     def post_mortem(self, traceback):
         self.reset()
@@ -126,7 +115,7 @@ class RemoteIPythonDebugger(TerminalPdb):
 
     def do_continue(self, arg):
         if not self.nosigint:
-            print('Resuming program, press Ctrl-C to relaunch debugger. Use q to exit.', file=self.stdout)
+            print('Resuming program, press Ctrl-C to relaunch debugger.', file=self.stdout)
         return super().do_continue(arg)
 
     def run_py(self, python_file, run_as_module, argv, set_trace=False):
@@ -155,6 +144,49 @@ class RemoteIPythonDebugger(TerminalPdb):
             sys.settrace(None)
 
     do_c = do_cont = do_continue
+
+    @classmethod
+    def connect_and_set_trace(cls, ip, port, frame=None):
+        if frame is None:
+            frame = sys._getframe().f_back
+        debugger, exit_stack = use_context(cls.connect_and_start(ip, port))
+        debugger.set_trace(frame, exit_stack.close)
+
+    @classmethod
+    @contextmanager
+    def start(cls, sock):
+        # TODO: should we set settings like that, or just write some ansi? https://apple.stackexchange.com/questions/33736/can-a-terminal-window-be-resized-with-a-terminal-command
+        term_data = receive_message(sock)
+        term_attrs, term_type, term_size = term_data['term_attrs'], term_data['term_type'], term_data['term_size']
+        # TODO: what is the correct term type? the pty or the remote tty?
+        with open_pty() as (master_fd, slave_fd):
+            resize_terminal(slave_fd, term_size[0], term_size[1])
+            modify_terminal(slave_fd, term_attrs)
+            set_ctty(slave_fd)
+            # TODO: join the thread sometime
+            with ThreadPoolExecutor(1) as exec:
+                future = exec.submit(pipe, {sock: master_fd, master_fd: sock})
+                slave_reader = os.fdopen(slave_fd, 'r')
+                slave_writer = os.fdopen(slave_fd, 'w')
+                yield RemoteIPythonDebugger(slave_reader, slave_writer, term_type)
+                print('Closing connection', file=slave_writer)
+                os.close(slave_fd)
+                future.result()
+        future.result()
+
+    @classmethod
+    @contextmanager
+    def connect(cls, ip, port):
+        print_to_ctty('Waiting for connection from debugger console on {}:{}'.format(ip, port))
+        with get_client_connection(ip, port) as sock:
+            yield sock
+
+    @classmethod
+    @contextmanager
+    def connect_and_start(cls, ip, port):
+        with cls.connect(ip, port) as sock:
+            with cls.start(sock) as debugger:
+                yield debugger
 
 # TODO: tests for apis
 # TODO: add tox
