@@ -1,12 +1,11 @@
 import os
 import select
 import time
-from unittest.mock import Mock
-
 import madbg
-from pytest import mark, raises
-
+from unittest.mock import Mock
+from pytest import raises
 from madbg.debugger import RemoteIPythonDebugger
+
 from .utils import enter_pty, run_in_process
 
 JOIN_TIMEOUT = 10
@@ -51,7 +50,7 @@ def run_client_process(port: int, debugger_input: bytes):
     return data
 
 
-@mark.parametrize('start_debugger_with_ctty', (True, False))
+
 def test_set_trace(port, start_debugger_with_ctty):
     debugger_future = run_in_process(run_set_trace_process, start_debugger_with_ctty, port)
     client_future = run_in_process(run_client_process, port, b'value_to_change += 1\nc\n')
@@ -59,17 +58,15 @@ def test_set_trace(port, start_debugger_with_ctty):
     client_future.result(JOIN_TIMEOUT)
 
 
-@mark.parametrize('start_debugger_with_ctty', (True, False))
 def test_set_trace_with_failing_debugger(port, start_debugger_with_ctty, monkeypatch):
-    monkeypatch.setattr(RemoteIPythonDebugger, '__init__', Mock(side_effect=ZeroDivisionError()))
+    monkeypatch.setattr(RemoteIPythonDebugger, '__init__', Mock(side_effect=lambda *a, **k: 1 / 0))
     debugger_future = run_in_process(run_set_trace_process, start_debugger_with_ctty, port)
     client_future = run_in_process(run_client_process, port, b'value_to_change += 1\nc\n')
     with raises(ZeroDivisionError):
         debugger_future.result(JOIN_TIMEOUT)
-    assert b'ZeroDivisionError' in client_future.result(JOIN_TIMEOUT)
+    assert ZeroDivisionError.__name__.encode() in client_future.result(JOIN_TIMEOUT)
 
 
-@mark.parametrize('start_debugger_with_ctty', (True, False))
 def test_set_trace_on_connect(port, start_debugger_with_ctty):
     debugger_future = run_in_process(run_set_trace_on_connect_process, start_debugger_with_ctty, port)
     # let the loop run a little

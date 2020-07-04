@@ -6,7 +6,7 @@ import atexit
 import termios
 from contextlib import contextmanager
 
-from .communication import pipe, send_message
+from .communication import pipe_until_closed, send_message
 from .consts import DEFAULT_IP, DEFAULT_PORT
 
 
@@ -66,7 +66,7 @@ def connect_to_debugger(ip=DEFAULT_IP, port=DEFAULT_PORT):
         send_message(socket, term_data)
         with prepare_terminal():
             socket_fd = socket.fileno()
-            pipe({0: socket_fd, socket_fd: 1})  # TODO: use the terminal directly instead of 0 and 1?
+            pipe_until_closed({0: socket_fd, socket_fd: 1})  # TODO: use the terminal directly instead of 0 and 1?
 
 
 """

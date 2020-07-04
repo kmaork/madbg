@@ -1,6 +1,7 @@
 import atexit
 import socket
 import sys
+from collections import defaultdict
 from concurrent.futures.thread import ThreadPoolExecutor
 from contextlib import contextmanager, ExitStack
 
@@ -46,3 +47,27 @@ def run_thread(func, *args, **kwargs):
             yield future
         finally:
             future.result()
+
+
+@contextmanager
+def loop_in_thread(func, *args, iteration_after_exit=True, **kwargs):
+    cont = True
+
+    def loop():
+        while cont:
+            func(*args, **kwargs)
+
+    with run_thread(loop) as future:
+        try:
+            yield future
+        finally:
+            cont = False
+    if iteration_after_exit:
+        func(*args, **kwargs)
+
+
+def opposite_dict(dikt):
+    opposite = defaultdict(list)
+    for key, value in dikt.items():
+        opposite[value].append(key)
+    return opposite

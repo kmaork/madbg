@@ -2,7 +2,6 @@ import runpy
 import os
 import sys
 import traceback
-from concurrent.futures.thread import ThreadPoolExecutor
 from bdb import BdbQuit
 from contextlib import contextmanager, nullcontext, ExitStack
 
@@ -12,7 +11,7 @@ from prompt_toolkit.output.vt100 import Vt100_Output
 
 from .utils import preserve_sys_state, get_client_connection, use_context, run_thread
 from .tty_utils import print_to_ctty, open_pty, resize_terminal, modify_terminal, set_ctty
-from .communication import receive_message, pipe
+from .communication import receive_message, pipe_in_background
 
 
 class RemoteIPythonDebugger(TerminalPdb):
@@ -33,6 +32,12 @@ class RemoteIPythonDebugger(TerminalPdb):
         self.use_rawinput = True
 
     def trace_dispatch(self, frame, event, arg, check_debugging_global=False, done_callback=None):
+        """
+        Overriding super to allow the check_debugging_global and done_callback args.
+
+        :param check_debugging_global: Whether to start debugging only if DEBUGGING_GLOBAL is in the globals.
+        :param done_callback: a callable to be called when the debug session ends.
+        """
         if check_debugging_global:
             if self.DEBUGGING_GLOBAL in frame.f_globals:
                 self.set_trace(frame)
@@ -49,6 +54,7 @@ class RemoteIPythonDebugger(TerminalPdb):
                 done_callback()
 
     def set_trace(self, frame=None, done_callback=None):
+        """ Overriding super to add the done_callback argument, allowing cleanup after a debug session """
         td = lambda *args: self.trace_dispatch(*args, done_callback=done_callback)
         if frame is None:
             frame = sys._getframe().f_back
@@ -60,14 +66,17 @@ class RemoteIPythonDebugger(TerminalPdb):
         self.set_step()
         sys.settrace(td)
 
-    def post_mortem(self, traceback):
-        self.reset()
-        self.interaction(None, traceback)
-
     def do_continue(self, arg):
+        """ Overriding super to add a print """
         if not self.nosigint:
             print('Resuming program, press Ctrl-C to relaunch debugger.', file=self.stdout)
         return super().do_continue(arg)
+
+    do_c = do_cont = do_continue
+
+    def post_mortem(self, traceback):
+        self.reset()
+        self.interaction(None, traceback)
 
     def run_py(self, python_file, run_as_module, argv, set_trace=False):
         run_name = '__main__'
@@ -94,8 +103,6 @@ class RemoteIPythonDebugger(TerminalPdb):
             self.quitting = True
             sys.settrace(None)
 
-    do_c = do_cont = do_continue
-
     @classmethod
     def connect_and_set_trace(cls, ip, port, frame=None):
         if frame is None:
@@ -105,46 +112,48 @@ class RemoteIPythonDebugger(TerminalPdb):
 
     @classmethod
     @contextmanager
-    def start(cls, sock):
-        # TODO: should we set settings like that, or just write some ansi? https://apple.stackexchange.com/questions/33736/can-a-terminal-window-be-resized-with-a-terminal-command
-        term_data = receive_message(sock)
+    def start(cls, sock_fd):
+        term_data = receive_message(sock_fd)
         term_attrs, term_type, term_size = term_data['term_attrs'], term_data['term_type'], term_data['term_size']
-        # TODO: what is the correct term type? the pty or the remote tty?
-        with ExitStack() as exit_stack, open_pty() as (master_fd, slave_fd):
+        with open_pty() as (master_fd, slave_fd):
             resize_terminal(slave_fd, term_size[0], term_size[1])
+            # TODO: should we set settings like that, or just write some ansi? https://apple.stackexchange.com/questions/33736/can-a-terminal-window-be-resized-with-a-terminal-command
             modify_terminal(slave_fd, term_attrs)
             set_ctty(slave_fd)
-            # TODO: join the thread sometime
-            exit_stack.enter_context(run_thread(pipe, {sock: master_fd, master_fd: sock}))
-            slave_reader = os.fdopen(slave_fd, 'r')
-            slave_writer = os.fdopen(slave_fd, 'w')
-            try:
-                yield RemoteIPythonDebugger(slave_reader, slave_writer, term_type)
-            except Exception:
-                print(traceback.format_exc(), file=slave_writer)
-                raise
-            finally:
-                print('Closing connection', file=slave_writer)
+            with pipe_in_background({sock_fd: master_fd, master_fd: sock_fd}):
+                slave_reader = os.fdopen(slave_fd, 'r')
+                slave_writer = os.fdopen(slave_fd, 'w')
+                try:
+                    yield RemoteIPythonDebugger(slave_reader, slave_writer, term_type)
+                except Exception:
+                    print(traceback.format_exc(), file=slave_writer)
+                    raise
+                finally:
+                    # We flush to make sure the message is written before the last pipe iteration
+                    print('Closing connection', file=slave_writer, flush=True)
+                    # TODO: solve race
+                    import time
+                    time.sleep(0.05)
 
     @classmethod
     @contextmanager
     def connect(cls, ip, port):
         print_to_ctty('Waiting for connection from debugger console on {}:{}'.format(ip, port))
-        with get_client_connection(ip, port) as sock:
-            yield sock
+        with get_client_connection(ip, port) as sock_fd:
+            yield sock_fd
 
     @classmethod
     @contextmanager
     def connect_and_start(cls, ip, port):
-        with cls.connect(ip, port) as sock:
-            with cls.start(sock) as debugger:
+        with cls.connect(ip, port) as sock_fd:
+            with cls.start(sock_fd) as debugger:
                 yield debugger
 
 # TODO: tests for apis
-# TODO: add tox
 # TODO: weird exception if pressing a lot of nexts
-# TODO: support python2? or completely python3
-# TODO: if sys.trace changes (ipdb in a loop), we don't close socket
+# TODO: make code more python3ic
+# TODO: if sys.trace changes (ipdb in a loop), we don't close sock_fdet
 # TODO: handle client death
 # TODO: bugs when connecting to debugger twice. Use that to identify remaining state from debugger
 # TODO: add test for debugging twice
+# TODO: test for non-main threads

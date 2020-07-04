@@ -4,12 +4,15 @@ import fcntl
 import os
 import struct
 from collections import defaultdict
+from contextlib import contextmanager
 from io import BytesIO
+
+from madbg.utils import loop_in_thread, opposite_dict
 
 MESSAGE_LENGTH_FMT = 'I'
 
 
-# TODO: support ssl
+# TODO: support ssl for authentication and encryption
 
 def set_nonblocking(fd):
     flags = fcntl.fcntl(fd, fcntl.F_GETFL)
@@ -28,45 +31,43 @@ def blocking_read(fd, n):
     return io.getvalue()
 
 
-def pipe(pipe_dict):
-    """ Pass data between the fds until at least on of each fd pair is closed. """
-    # TODO: WTF
-    pipe_dict = dict(pipe_dict)
-    reverse_pipe_dict = defaultdict(list)
-    for k, v in pipe_dict.items():
-        reverse_pipe_dict[v].append(k)
-    for fd in pipe_dict:
-        set_nonblocking(fd)  # TODO: just assert non blocking
-    invalid_fds = []
-    while pipe_dict:
-        for fd in (*pipe_dict.keys(), *pipe_dict.values()):
-            try:
-                os.fstat(fd)
-            except OSError:
-                invalid_fds.append(fd)
-                try:
-                    if fd in pipe_dict:
-                        os.write(pipe_dict[fd], os.read(fd, 1024))
-                except OSError:
-                    pass
-        for fd in invalid_fds:
-            pipe_dict.pop(fd, None)
-            for writing_fd in reverse_pipe_dict[fd]:
+# TODO: make sure and test that errors in the debugger don't affect the program's flow
+
+def pipe_once(pipe_dict):
+    # If read fails, write will fail. But if write fail, we might be still able to read.
+    # TODO: use wakeup fd instead of 0 timeout polling (os.pipe? eventfd?)
+    # TODO: use splice or ebpf
+    if not pipe_dict:
+        return
+    reverse_pipe_dict = opposite_dict(pipe_dict)
+    for read_fd in select.select(list(pipe_dict), [], [], 0)[0]:
+        write_fd = pipe_dict[read_fd]
+        try:
+            data = os.read(read_fd, 1024)
+            if not data:
+                raise OSError('EOF')
+        except OSError:
+            pipe_dict.pop(read_fd, None)
+            for writing_fd in reverse_pipe_dict[read_fd]:
                 pipe_dict.pop(writing_fd, None)
-        invalid_fds = []
-        readable_fds, _, _ = select.select(list(pipe_dict), [], [], 0.1)
-        for fd in readable_fds:
+        else:
             try:
-                data = os.read(fd, 1024)
+                os.write(write_fd, data)
             except OSError:
-                invalid_fds.append(pipe_dict[fd])
-            else:
-                if not data:
-                    invalid_fds.append(fd)
-                try:
-                    os.write(pipe_dict[fd], data)
-                except OSError:
-                    invalid_fds.append(pipe_dict[fd])
+                pipe_dict.pop(read_fd, None)
+
+
+@contextmanager
+def pipe_in_background(pipe_dict):
+    pipe_dict = dict(pipe_dict)
+    with loop_in_thread(pipe_once, pipe_dict):
+        yield
+
+
+def pipe_until_closed(pipe_dict):
+    pipe_dict = dict(pipe_dict)
+    while pipe_dict:
+        pipe_once(pipe_dict)
 
 
 def send_message(sock, obj):

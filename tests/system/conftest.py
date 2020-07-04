@@ -11,3 +11,8 @@ def fix_ipython():
 @fixture
 def port():
     return find_free_port()
+
+
+@fixture(params=(True, False))
+def start_debugger_with_ctty(request):
+    return request.param
