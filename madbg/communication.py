@@ -3,7 +3,6 @@ import select
 import fcntl
 import os
 import struct
-from collections import defaultdict
 from contextlib import contextmanager
 from io import BytesIO
 
@@ -11,8 +10,6 @@ from madbg.utils import loop_in_thread, opposite_dict
 
 MESSAGE_LENGTH_FMT = 'I'
 
-
-# TODO: support ssl for authentication and encryption
 
 def set_nonblocking(fd):
     flags = fcntl.fcntl(fd, fcntl.F_GETFL)
@@ -31,12 +28,10 @@ def blocking_read(fd, n):
     return io.getvalue()
 
 
-# TODO: make sure and test that errors in the debugger don't affect the program's flow
-
 def pipe_once(pipe_dict):
     # If read fails, write will fail. But if write fail, we might be still able to read.
     # TODO: use wakeup fd instead of 0 timeout polling (os.pipe? eventfd?)
-    # TODO: use splice or ebpf
+    # TODO: can use splice or ebpf
     if not pipe_dict:
         return
     reverse_pipe_dict = opposite_dict(pipe_dict)

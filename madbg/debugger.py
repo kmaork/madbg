@@ -23,7 +23,7 @@ class RemoteIPythonDebugger(TerminalPdb):
     """
     DEBUGGING_GLOBAL = 'DEBUGGING_WITH_MADBG'
 
-    # TODO: this should be a thread safe singleton
+    # TODO: should this be a per-thread singleton? Because sys.settrace is singletonic
 
     def __init__(self, stdin, stdout, term_type):
         term_input = Vt100Input(stdin)
@@ -117,7 +117,6 @@ class RemoteIPythonDebugger(TerminalPdb):
         term_attrs, term_type, term_size = term_data['term_attrs'], term_data['term_type'], term_data['term_size']
         with open_pty() as (master_fd, slave_fd):
             resize_terminal(slave_fd, term_size[0], term_size[1])
-            # TODO: should we set settings like that, or just write some ansi? https://apple.stackexchange.com/questions/33736/can-a-terminal-window-be-resized-with-a-terminal-command
             modify_terminal(slave_fd, term_attrs)
             set_ctty(slave_fd)
             with pipe_in_background({sock_fd: master_fd, master_fd: sock_fd}):
@@ -138,7 +137,7 @@ class RemoteIPythonDebugger(TerminalPdb):
     @classmethod
     @contextmanager
     def connect(cls, ip, port):
-        print_to_ctty('Waiting for connection from debugger console on {}:{}'.format(ip, port))
+        print_to_ctty(f'Waiting for connection from debugger console on {ip}:{port}')
         with get_client_connection(ip, port) as sock_fd:
             yield sock_fd
 
@@ -148,7 +147,3 @@ class RemoteIPythonDebugger(TerminalPdb):
         with cls.connect(ip, port) as sock_fd:
             with cls.start(sock_fd) as debugger:
                 yield debugger
-
-# TODO: handle client death
-# TODO: bugs when connecting to debugger twice. Use that to identify remaining state from debugger
-# TODO: add test for debugging twice

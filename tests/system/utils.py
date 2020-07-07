@@ -4,9 +4,7 @@ import socket
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import closing
 
-STDIN_FILENO = 0
-STDOUT_FILENO = 1
-STDERR_FILENO = 2
+from madbg.consts import STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO
 
 
 def enter_pty(attach_as_ctty, connect_output_to_pty=True):

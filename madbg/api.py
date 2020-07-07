@@ -74,7 +74,7 @@ def run_with_debugging(ip, port, python_file, run_as_module, argv, use_post_mort
             else:
                 raise
         else:
-            print('{} finished running successfully'.format(python_file), file=debugger.stdout)
+            print(f'{python_file} finished running successfully', file=debugger.stdout)
 
 
 if __name__ == '__main__':

@@ -4,11 +4,13 @@ import time
 import madbg
 from unittest.mock import Mock
 from pytest import raises
+
+from madbg.consts import STDOUT_FILENO
 from madbg.debugger import RemoteIPythonDebugger
 
 from .utils import enter_pty, run_in_process
 
-JOIN_TIMEOUT = 10
+JOIN_TIMEOUT = 5
 
 
 def run_set_trace_process(start_with_ctty, port) -> bool:
@@ -44,18 +46,20 @@ def run_client_process(port: int, debugger_input: bytes):
             pass
         else:
             break
+    os.close(STDOUT_FILENO)
     data = b''
     while select.select([master_fd], [], [], 0)[0]:
         data += os.read(master_fd, 1024)
     return data
 
 
-
 def test_set_trace(port, start_debugger_with_ctty):
     debugger_future = run_in_process(run_set_trace_process, start_debugger_with_ctty, port)
     client_future = run_in_process(run_client_process, port, b'value_to_change += 1\nc\n')
     assert debugger_future.result(JOIN_TIMEOUT)
-    client_future.result(JOIN_TIMEOUT)
+    client_output = client_future.result(JOIN_TIMEOUT)
+    # TODO: why does this assert fail?
+    #assert b'Closing connection' in client_output
 
 
 def test_set_trace_with_failing_debugger(port, start_debugger_with_ctty, monkeypatch):
@@ -64,7 +68,8 @@ def test_set_trace_with_failing_debugger(port, start_debugger_with_ctty, monkeyp
     client_future = run_in_process(run_client_process, port, b'value_to_change += 1\nc\n')
     with raises(ZeroDivisionError):
         debugger_future.result(JOIN_TIMEOUT)
-    assert ZeroDivisionError.__name__.encode() in client_future.result(JOIN_TIMEOUT)
+    client_output = client_future.result(JOIN_TIMEOUT)
+    assert ZeroDivisionError.__name__.encode() in client_output
 
 
 def test_set_trace_on_connect(port, start_debugger_with_ctty):
