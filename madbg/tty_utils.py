@@ -6,6 +6,8 @@ from contextlib import contextmanager
 from multiprocessing.pool import Pool
 import signal
 import fcntl
+from typing import Optional
+
 import termios
 
 
@@ -40,9 +42,7 @@ def ignore_signal(signal_num: int):
 
 
 def detach_ctty(ctty_fd):
-    # TODO: should we handle sigcont?
     # TODO: will children receive sighup as well?
-    # TODO: why are we receiving sighup multiple times?
     # When a process detaches from a tty, it is sent the signals SIGHUP and then SIGCONT
     with ignore_signal(signal.SIGHUP):
         fcntl.ioctl(ctty_fd, termios.TIOCNOTTY)
@@ -52,7 +52,11 @@ def attach_ctty(fd):
     fcntl.ioctl(fd, termios.TIOCSCTTY, 1)
 
 
-def get_ctty_fd():
+def get_ctty_fd() -> Optional[int]:
+    """
+    If there is a controlling tty for this process, return a read+write fd to it.
+    Otherwise return None.
+    """
     try:
         return os.open(os.ctermid(), os.O_RDWR)
     except OSError as e:
@@ -62,7 +66,9 @@ def get_ctty_fd():
 
 
 def detach_current_ctty():
+    """ Detach from ctty if there is one """
     ctty_fd = get_ctty_fd()
+    # If there is no ctty, ctty_fd is None and we don't do anything
     if ctty_fd is not None:
         if is_session_leader():
             detach_ctty(ctty_fd)
@@ -107,10 +113,8 @@ def open_pty():
             os.close(slave_fd)
 
 
-def print_to_ctty(string, ctty_fd=None):
-    if ctty_fd is None:
-        ctty_fd = get_ctty_fd()
+def print_to_ctty(string):
+    """ If there is a ctty, print the given string to it. """
+    ctty_fd = get_ctty_fd()
     if ctty_fd is not None:
-        # TODO: should we raise an exception otherwise?
         print(string, file=os.fdopen(ctty_fd, 'w'))
-    return ctty_fd

@@ -9,7 +9,7 @@ from IPython.terminal.debugger import TerminalPdb
 from prompt_toolkit.input.vt100 import Vt100Input
 from prompt_toolkit.output.vt100 import Vt100_Output
 
-from .utils import preserve_sys_state, get_client_connection, use_context, run_thread
+from .utils import preserve_sys_state, get_client_connection, use_context
 from .tty_utils import print_to_ctty, open_pty, resize_terminal, modify_terminal, set_ctty
 from .communication import receive_message, pipe_in_background
 
@@ -40,7 +40,7 @@ class RemoteIPythonDebugger(TerminalPdb):
         """
         if check_debugging_global:
             if self.DEBUGGING_GLOBAL in frame.f_globals:
-                self.set_trace(frame)
+                self.set_trace(frame, done_callback=done_callback)
             else:
                 return
         bdb_quit = False
@@ -108,7 +108,7 @@ class RemoteIPythonDebugger(TerminalPdb):
         if frame is None:
             frame = sys._getframe().f_back
         debugger, exit_stack = use_context(cls.connect_and_start(ip, port))
-        debugger.set_trace(frame, exit_stack.close)
+        debugger.set_trace(frame, done_callback=exit_stack.close)
 
     @classmethod
     @contextmanager
@@ -149,11 +149,6 @@ class RemoteIPythonDebugger(TerminalPdb):
             with cls.start(sock_fd) as debugger:
                 yield debugger
 
-# TODO: tests for apis
-# TODO: weird exception if pressing a lot of nexts
-# TODO: make code more python3ic
-# TODO: if sys.trace changes (ipdb in a loop), we don't close sock_fdet
 # TODO: handle client death
 # TODO: bugs when connecting to debugger twice. Use that to identify remaining state from debugger
 # TODO: add test for debugging twice
-# TODO: test for non-main threads

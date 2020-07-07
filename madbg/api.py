@@ -20,12 +20,10 @@ def set_trace(ip=DEFAULT_IP, port=DEFAULT_PORT):
 def _wait_for_connection_and_send_signal(ip, port):
     try:
         sock, exit_stack = use_context(RemoteIPythonDebugger.connect(ip, port))
-        os.kill(0, DEBUGGER_CONNECTED_SIGNAL)
         return sock, exit_stack
-    except:  # TODO: use finally
+    finally:
         # Invoke the signal handler that will try to fetch this future's result and raise this exception
         os.kill(0, DEBUGGER_CONNECTED_SIGNAL)
-        raise
 
 
 def set_trace_on_connect(ip=DEFAULT_IP, port=DEFAULT_PORT):
@@ -33,10 +31,6 @@ def set_trace_on_connect(ip=DEFAULT_IP, port=DEFAULT_PORT):
     Set up a debugger in another thread, which will signal the main thread when it receives a connection.
     Also set up a signal handler that will call set_trace when the signal is received.
     """
-
-    # TODO: the threading causes errors with the ipython history sqlite db.
-    # TODO: this only works on the main thread :(
-    # TODO: allow cancelling that
 
     def new_handler(_, frame):
         signal.signal(DEBUGGER_CONNECTED_SIGNAL, old_handler)
@@ -47,7 +41,7 @@ def set_trace_on_connect(ip=DEFAULT_IP, port=DEFAULT_PORT):
             set_trace_on_connect(ip, port)
 
         debugger, _ = use_context(RemoteIPythonDebugger.start(sock), exit_stack)
-        debugger.set_trace(frame, lambda: on_trace_done)
+        debugger.set_trace(frame, done_callback=lambda: on_trace_done)
 
     old_handler = signal.signal(DEBUGGER_CONNECTED_SIGNAL, new_handler)
     debugger_future = ThreadPoolExecutor(1).submit(_wait_for_connection_and_send_signal, ip, port)
@@ -61,7 +55,6 @@ def post_mortem(ip=DEFAULT_IP, port=DEFAULT_PORT, traceback=None):
 
 def run_with_debugging(ip, port, python_file, run_as_module, argv, use_post_mortem=True, use_set_trace=False,
                        debugger=None):
-    # TODO: check and test this behavior
     with RemoteIPythonDebugger.connect_and_start(ip, port) if debugger is None else nullcontext(debugger) as debugger:
         try:
             debugger.run_py(python_file, run_as_module, argv, set_trace=use_set_trace)
@@ -86,5 +79,3 @@ def run_with_debugging(ip, port, python_file, run_as_module, argv, use_post_mort
 
 if __name__ == '__main__':
     set_trace(DEFAULT_IP)
-
-# TODO: update readme with new features, mention similar projects

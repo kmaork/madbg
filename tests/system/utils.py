@@ -10,7 +10,14 @@ STDERR_FILENO = 2
 
 
 def enter_pty(attach_as_ctty, connect_output_to_pty=True):
-    # TODO: should be a contextmanager. Why not use utils?
+    """
+    To be used in a subprocess that want to be run inside a pty.
+    Enters a new session, opens a new pty and sets the pty to be its controlling tty.
+    If connect_output_to_pty is True, the process's stdio will be redirected to the pty's
+    slave interface.
+
+    :return: The master fd for the pty.
+    """
     os.setsid()
     master_fd, slave_fd = pty.openpty()
     if attach_as_ctty:
