@@ -6,7 +6,7 @@ setup(
     packages=find_packages(exclude=('tests',)),
     classifiers=['Operating System :: POSIX :: Linux'],
     install_requires=['click',
-                      'IPython @ git+ssh://git@github.com/ipython/ipython.git#egg=IPython',
+                      'IPython>=7.17.0',
                       'prompt_toolkit'],
     entry_points=dict(
         console_scripts=['madbg=madbg.__main__:cli']
