@@ -3,8 +3,7 @@ import os
 import sys
 import traceback
 from bdb import BdbQuit
-from contextlib import contextmanager, nullcontext, ExitStack
-
+from contextlib import contextmanager, nullcontext
 from IPython.terminal.debugger import TerminalPdb
 from prompt_toolkit.input.vt100 import Vt100Input
 from prompt_toolkit.output.vt100 import Vt100_Output

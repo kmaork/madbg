@@ -1,5 +1,6 @@
 import os
 import socket
+import time
 from functools import partial
 from tty import setraw
 import atexit
@@ -41,17 +42,26 @@ def prepare_terminal():
 
 
 @contextmanager
-def connect_to_server(ip, port):
-    s = socket.socket()
-    s.connect((ip, port))
+def connect_to_server(ip, port, timeout):
+    original_timeout = timeout
+    start_time = time.time()
+    s = None
+    while not s:
+        try:
+            s = socket.create_connection((ip, port), timeout=timeout)
+        except ConnectionRefusedError:
+            pass
+        timeout = original_timeout - (time.time() - start_time)
+        if timeout <= 0:
+            raise TimeoutError()
     try:
         yield s
     finally:
         s.close()
 
 
-def connect_to_debugger(ip=DEFAULT_IP, port=DEFAULT_PORT):
-    with connect_to_server(ip, port) as socket:
+def connect_to_debugger(ip=DEFAULT_IP, port=DEFAULT_PORT, timeout=0.3):
+    with connect_to_server(ip, port, timeout) as socket:
         tty_handle = get_tty_handle()
         term_size = os.get_terminal_size(tty_handle)
         term_data = dict(term_attrs=termios.tcgetattr(tty_handle),

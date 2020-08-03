@@ -1,10 +1,12 @@
 import os
+import re
 import signal
 import sys
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from pdb import Restart
+from hypno import inject_py
 
 from madbg.utils import use_context
 from .consts import DEFAULT_IP, DEFAULT_PORT
@@ -13,8 +15,19 @@ from .debugger import RemoteIPythonDebugger
 DEBUGGER_CONNECTED_SIGNAL = signal.SIGUSR1
 
 
-def set_trace(ip=DEFAULT_IP, port=DEFAULT_PORT):
-    RemoteIPythonDebugger.connect_and_set_trace(ip, port, sys._getframe(1))
+def inject_set_trace(pid, ip=DEFAULT_IP, port=DEFAULT_PORT):
+    assert isinstance(ip, str)
+    assert re.fullmatch('[.0-9]+', ip)
+    assert isinstance(port, int)
+    sig_num = signal.SIGUSR1.value
+    inject_py(pid, f'__import__("signal").signal({sig_num},lambda _,f:__import__("madbg").set_trace("{ip}",{port},f))')
+    os.kill(pid, sig_num)
+
+
+def set_trace(ip=DEFAULT_IP, port=DEFAULT_PORT, frame=None):
+    if frame is None:
+        frame = sys._getframe(1)
+    RemoteIPythonDebugger.connect_and_set_trace(ip, port, frame)
 
 
 def _wait_for_connection_and_send_signal(ip, port):
