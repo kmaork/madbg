@@ -1,5 +1,8 @@
 # madbg
-![](https://github.com/kmaork/madbg/workflows/Python%20package/badge.svg)
+[![Tests (GitHub Actions)](https://github.com/kmaork/madbg/workflows/Tests/badge.svg)](https://github.com/kmaork/madbg)
+[![PyPI Supported Python Versions](https://img.shields.io/pypi/pyversions/madbg.svg)](https://pypi.python.org/pypi/madbg/)
+[![PyPI version](https://badge.fury.io/py/madbg.svg)](https://badge.fury.io/py/madbg)
+[![GitHub license](https://img.shields.io/github/license/kmaork/madbg)](https://github.com/kmaork/madbg/blob/master/LICENSE.txt)
 
 A fully-featured remote debugger for python.
 

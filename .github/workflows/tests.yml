@@ -22,16 +22,14 @@ jobs:
         run: pip install tox tox-wheel
       - name: Test sdist with tox
         run: python -m tox
-      - name: Upload ${{ matrix.python-version }} sdist
+      - name: Upload sdist
         uses: actions/upload-artifact@v2
         with:
           name: dist
           path: .tox/dist/*
       - name: Test wheel with tox
         run: python -m tox --wheel
-      - name: Audit ${{ matrix.python-version }} wheel
-        run: auditwheel repair .tox/dist/* -w wheelhouse${{ matrix.python-version }}
-      - name: Upload ${{ matrix.python-version }} wheel
+      - name: Upload wheel
         uses: actions/upload-artifact@v2
         with:
           name: dist
