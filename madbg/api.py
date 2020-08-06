@@ -8,20 +8,27 @@ from contextlib import nullcontext
 from pdb import Restart
 from hypno import inject_py
 
-from madbg.utils import use_context
+from .client import connect_to_debugger
+from .utils import use_context
 from .consts import DEFAULT_IP, DEFAULT_PORT
 from .debugger import RemoteIPythonDebugger
 
 DEBUGGER_CONNECTED_SIGNAL = signal.SIGUSR1
 
 
-def inject_set_trace(pid, ip=DEFAULT_IP, port=DEFAULT_PORT):
+def _inject_set_trace(pid, ip=DEFAULT_IP, port=DEFAULT_PORT):
     assert isinstance(ip, str)
     assert re.fullmatch('[.0-9]+', ip)
     assert isinstance(port, int)
-    sig_num = signal.SIGUSR1.value
+    sig_num = DEBUGGER_CONNECTED_SIGNAL.value
     inject_py(pid, f'__import__("signal").signal({sig_num},lambda _,f:__import__("madbg").set_trace("{ip}",{port},f))')
     os.kill(pid, sig_num)
+
+
+def attach_to_process(pid: int, port=DEFAULT_PORT, connect_timeout=5):
+    ip = '127.0.0.1'
+    _inject_set_trace(pid, ip, port)
+    connect_to_debugger(ip, port, timeout=connect_timeout)
 
 
 def set_trace(ip=DEFAULT_IP, port=DEFAULT_PORT, frame=None):
@@ -90,5 +97,4 @@ def run_with_debugging(ip, port, python_file, run_as_module, argv, use_post_mort
             print(f'{python_file} finished running successfully', file=debugger.stdout)
 
 
-if __name__ == '__main__':
-    set_trace(DEFAULT_IP)
+__all__ = ['attach_to_process', 'set_trace', 'set_trace_on_connect', 'post_mortem', 'run_with_debugging']

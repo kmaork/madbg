@@ -1,9 +1,10 @@
 import sys
 from click import ClickException, group, argument, option, pass_context
 
+from madbg.api import attach_to_process
 from madbg.client import connect_to_debugger
 from madbg.consts import DEFAULT_IP, DEFAULT_PORT
-from madbg import run_with_debugging, inject_set_trace
+from madbg import run_with_debugging, attach_to_process
 
 
 @group()
@@ -25,9 +26,7 @@ def connect(ip, port):
 @argument('pid', type=int)
 @argument('port', type=int, default=DEFAULT_PORT)
 def attach(pid, port):
-    ip = '127.0.0.1'
-    inject_set_trace(pid, ip, port)
-    connect_to_debugger(ip, port, 5)
+    attach_to_process(pid, port)
 
 
 @cli.command(context_settings=dict(ignore_unknown_options=True,

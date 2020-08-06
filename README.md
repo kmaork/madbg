@@ -1,40 +1,49 @@
 # madbg
 ![](https://github.com/kmaork/madbg/workflows/Python%20package/badge.svg)
 
-A remote python debugger based on the IPython debugger (like ipdb) featuring a full remote TTY!
+A fully-featured remote debugger for python.
 
-madbg:
-- Provides a fully featured remote tty, allowing sending keyboard signals to the debugger,
-tab completion, command history, line editing and more.
+- Provides a full remote tty, allowing sending keyboard signals to the debugger,
+tab completion, command history, line editing and more
 - Runs the IPython debugger with all its capabilities
-- Allows you to connect preemptively to a running program
+- Allows attaching to running programs preemptively
 - Affects the debugged program [minimally](#possible-effects)
-- Provides TTY features even when debugged program is a deamon
+- Provides TTY features even when debugged program is a deamon, or run outside a terminal.
 
 ## Installation
-`pip install git+https://github.com/kmaork/madbg#egg=madbg`
-
-Soon on PYPI!
+```
+pip install madbg
+```
 
 ## Usage
 Madbg provide both a python API and a CLI.
 
+### Attaching to a running process
+```
+madbg attach <pid>
+```
+Or
+```python
+import madbg
+madbg.attach_to_process(pid)
+```
+
 ### Starting a debugger
 #### Using the CLI
-Run a python file with automatic post-mortem (the "..." are extra arguments to pass to your program):
+Run a python file with automatic post-mortem:
 ```
-madbg run path_to_your_script.py ...
+madbg run path_to_your_script.py <args_for_script ...>
 ```
 Run a python module similarly to `python -m`:
 ```
-madbg run -m module.name ...
+madbg run -m module.name <args_for_script ...>
 ```
 Start a script, starting the debugger from the first line: 
 ```
-madbg run --use-set-trace script.py ...
+madbg run --use-set-trace script.py <args_for_script ...>
 ```
 
-#### Using Python
+#### Using the API
 Start a debugger in the next line:
 ```python
 madbg.set_trace()
@@ -54,7 +63,7 @@ madbg.post_mortem()
 madbg connect
 ```
 
-#### Using Python
+#### Using the API
 ```python
 madbg.connect_to_debugger()
 ```
@@ -67,7 +76,7 @@ madbg.set_trace(ip='0.0.0.0', port=1337)
 ```
 or
 ```
-madbg connect A.B.C.D 1337
+madbg connect 8.8.8.8 1337
 ```
 ## Platforms
 
@@ -75,10 +84,10 @@ Madbg supports linux with python>=3.7.
 
 ## Possible effects
 
-What madbg does that might affect your program:
-- Changes the pgid and sid of your process
-- Changes the CTTY of your process
-- Affects child processes in unknown ways (I have not checked yet)
+What madbg does that might affect a debugged program:
+- Changes the pgid and sid of the debugged process
+- Changes the CTTY of the debugged process
+- Affects child processes in unknown ways (Not tested yet)
 
 What madbg doesn't do:
 - Writes or reads from stdio

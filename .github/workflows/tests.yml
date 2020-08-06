@@ -1,0 +1,57 @@
+name: Tests
+
+on:
+  release:
+    types: [created]
+  push:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container: quay.io/pypa/manylinux2014_x86_64 # Need a relatively modern platform for the actions to work
+    strategy:
+      matrix:
+        python-version: [cp37-cp37m, cp38-cp38]
+    steps:
+      - uses: actions/checkout@v2
+      - name: Set up Python ${{ matrix.python-version }}
+        run: |
+          echo "::add-path::/opt/python/${{ matrix.python-version }}/bin"
+          echo $PATH
+      - name: Install dependencies
+        run: pip install tox tox-wheel
+      - name: Test sdist with tox
+        run: python -m tox
+      - name: Upload ${{ matrix.python-version }} sdist
+        uses: actions/upload-artifact@v2
+        with:
+          name: dist
+          path: .tox/dist/*
+      - name: Test wheel with tox
+        run: python -m tox --wheel
+      - name: Audit ${{ matrix.python-version }} wheel
+        run: auditwheel repair .tox/dist/* -w wheelhouse${{ matrix.python-version }}
+      - name: Upload ${{ matrix.python-version }} wheel
+        uses: actions/upload-artifact@v2
+        with:
+          name: dist
+          path: wheelhouse${{ matrix.python-version }}/*
+
+  publish:
+    if: github.event_name == 'release' && github.event.action == 'created'
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v2
+        with:
+          name: dist
+          path: dist
+      - name: Publish
+        env:
+          TWINE_USERNAME: ${{ secrets.PYPI_USERNAME }}
+          TWINE_PASSWORD: ${{ secrets.PYPI_PASSWORD }}
+        run: |
+          python -m pip install twine
+          python -m twine check dist/*
+          python -m twine upload --skip-existing dist/*
