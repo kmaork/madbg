@@ -8,16 +8,15 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    container: quay.io/pypa/manylinux2014_x86_64 # Need a relatively modern platform for the actions to work
     strategy:
       matrix:
-        python-version: [cp37-cp37m, cp38-cp38]
+        python-version: [3.7, 3.8]
     steps:
       - uses: actions/checkout@v2
       - name: Set up Python ${{ matrix.python-version }}
-        run: |
-          echo "::add-path::/opt/python/${{ matrix.python-version }}/bin"
-          echo $PATH
+          uses: actions/setup-python@v2
+          with:
+            python-version: ${{ matrix.python-version }}
       - name: Install dependencies
         run: pip install tox tox-wheel
       - name: Test sdist with tox
