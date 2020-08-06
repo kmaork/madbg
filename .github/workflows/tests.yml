@@ -33,7 +33,7 @@ jobs:
         uses: actions/upload-artifact@v2
         with:
           name: dist
-          path: wheelhouse${{ matrix.python-version }}/*
+          path: .tox/dist/*
 
   publish:
     if: github.event_name == 'release' && github.event.action == 'created'
