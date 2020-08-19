@@ -122,7 +122,7 @@ class RemoteIPythonDebugger(TerminalPdb):
                 slave_reader = os.fdopen(slave_fd, 'r')
                 slave_writer = os.fdopen(slave_fd, 'w')
                 try:
-                    yield RemoteIPythonDebugger(slave_reader, slave_writer, term_type)
+                    yield cls(slave_reader, slave_writer, term_type)
                 except Exception:
                     print(traceback.format_exc(), file=slave_writer)
                     raise
