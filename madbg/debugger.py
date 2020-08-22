@@ -44,7 +44,7 @@ class RemoteIPythonDebugger(TerminalPdb):
                 return
         bdb_quit = False
         try:
-            super().trace_dispatch(frame, event, arg)
+            return super().trace_dispatch(frame, event, arg)
         except BdbQuit:
             bdb_quit = True
             raise
