@@ -10,7 +10,7 @@ A fully-featured remote debugger for python.
 tab completion, command history, line editing and more
 - Runs the IPython debugger with all its capabilities
 - Allows attaching to running programs preemptively
-- Affects the debugged program [minimally](#possible-effects)
+- Affects the debugged program [minimally](#possible-effects), although not yet recommended for use in production environment
 - Provides TTY features even when debugged program is a deamon, or run outside a terminal.
 
 ## Installation
