@@ -5,6 +5,7 @@ import traceback
 from bdb import BdbQuit
 from contextlib import contextmanager, nullcontext
 from IPython.terminal.debugger import TerminalPdb
+from IPython.terminal.interactiveshell import TerminalInteractiveShell
 from prompt_toolkit.input.vt100 import Vt100Input
 from prompt_toolkit.output.vt100 import Vt100_Output
 
@@ -25,6 +26,8 @@ class RemoteIPythonDebugger(TerminalPdb):
     # TODO: should this be a per-thread singleton? Because sys.settrace is singletonic
 
     def __init__(self, stdin, stdout, term_type):
+        # A patch until https://github.com/ipython/ipython/issues/11745 is solved
+        TerminalInteractiveShell.simple_prompt = False
         term_input = Vt100Input(stdin)
         term_output = Vt100_Output.from_pty(stdout, term_type)
         super().__init__(pt_session_options=dict(input=term_input, output=term_output), stdin=stdin, stdout=stdout)
