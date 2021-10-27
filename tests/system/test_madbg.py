@@ -58,6 +58,14 @@ def run_client(port: int, debugger_input: bytes):
     return data
 
 
+def run_post_mortem(start_with_ctty, port):
+    enter_pty(start_with_ctty)
+    try:
+        1 / 0
+    except:
+        madbg.post_mortem(port=port)
+
+
 def test_set_trace(port, start_debugger_with_ctty):
     debugger_future = run_in_process(run_set_trace_and_expect_var_to_change, start_debugger_with_ctty, port)
     client_future = run_in_process(run_client, port, b'value_to_change += 1\nc\n')
@@ -91,4 +99,12 @@ def test_set_trace_on_connect(port, start_debugger_with_ctty):
     assert not debugger_future.done()
     client_future = run_in_process(run_client, port, b'conti = False\nc\n')
     assert debugger_future.result(JOIN_TIMEOUT)
+    client_future.result(JOIN_TIMEOUT)
+
+
+def test_post_mortem(port, start_debugger_with_ctty):
+    debugger_future = run_in_process(run_post_mortem, start_debugger_with_ctty, port)
+    assert not debugger_future.done()
+    client_future = run_in_process(run_client, port, b'c\n')
+    debugger_future.result(JOIN_TIMEOUT)
     client_future.result(JOIN_TIMEOUT)

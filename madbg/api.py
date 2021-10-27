@@ -69,7 +69,7 @@ def set_trace_on_connect(ip=DEFAULT_IP, port=DEFAULT_PORT):
 
 def post_mortem(ip=DEFAULT_IP, port=DEFAULT_PORT, traceback=None):
     traceback = traceback or sys.exc_info()[2] or sys.last_traceback
-    with RemoteIPythonDebugger.connect(ip, port) as debugger:
+    with RemoteIPythonDebugger.connect_and_start(ip, port) as debugger:
         debugger.post_mortem(traceback)
 
 
