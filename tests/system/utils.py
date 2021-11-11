@@ -33,6 +33,15 @@ def run_in_process(func, *args, **kwargs):
     return ProcessPoolExecutor(1).submit(func, *args, **kwargs)
 
 
+def run_script(script, start_with_ctty, args, kwargs):
+    enter_pty(start_with_ctty)
+    return script(*args, **kwargs)
+
+
+def run_script_in_process(script, start_with_ctty, *args, **kwargs):
+    return ProcessPoolExecutor(1).submit(run_script, script, start_with_ctty, args, kwargs)
+
+
 def find_free_port() -> int:
     """ A suggested way of finding a free port on the local machine. Prone to race conditions. """
     with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:

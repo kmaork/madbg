@@ -1,14 +1,13 @@
 import time
 import madbg
 
-from .utils import enter_pty, run_in_process, JOIN_TIMEOUT, run_client
+from .utils import run_in_process, run_script_in_process, JOIN_TIMEOUT, run_client
 
 
-def set_trace_on_connect_script(start_with_ctty, port) -> bool:
+def set_trace_on_connect_script(port) -> bool:
     """
     Enter an infinite loop and break it using set_trace_on_connect.
     """
-    enter_pty(start_with_ctty)
     madbg.set_trace_on_connect(port=port)
     conti = True
     while conti:
@@ -17,7 +16,7 @@ def set_trace_on_connect_script(start_with_ctty, port) -> bool:
 
 
 def test_set_trace_on_connect(port, start_debugger_with_ctty):
-    debugger_future = run_in_process(set_trace_on_connect_script, start_debugger_with_ctty, port)
+    debugger_future = run_script_in_process(set_trace_on_connect_script, start_debugger_with_ctty, port)
     # let the loop run a little
     time.sleep(0.5)
     assert not debugger_future.done()
