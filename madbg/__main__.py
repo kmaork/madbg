@@ -1,13 +1,12 @@
 import sys
 from click import ClickException, group, argument, option, pass_context
 
-from madbg.api import attach_to_process
 from madbg.client import connect_to_debugger
 from madbg.consts import DEFAULT_IP, DEFAULT_PORT
 from madbg import run_with_debugging, attach_to_process
 
 
-@group()
+@group(context_settings=dict(help_option_names=['-h', '--help']))
 def cli():
     pass
 
@@ -36,7 +35,7 @@ def attach(pid, port):
 @option('-p', '--port', type=int, default=DEFAULT_PORT, show_default=True)
 @option('-n', '--no-post-mortem', is_flag=True, flag_value=True, default=False)
 @option('-s', '--use-set-trace', is_flag=True, flag_value=True, default=False)
-@option('-m', '--run-as-module', is_flag=True, flag_value=True, default=False)
+@option('-m', '--run-as-module', is_flag=True, flag_value=True, default=False, help='Works the same as python -m')
 @argument('py_file', type=str, required=True)
 @pass_context
 def run(context, bind_ip, port, run_as_module, py_file, no_post_mortem, use_set_trace):
