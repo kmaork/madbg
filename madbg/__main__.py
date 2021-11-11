@@ -40,7 +40,8 @@ def attach(pid, port):
 @pass_context
 def run(context, bind_ip, port, run_as_module, py_file, no_post_mortem, use_set_trace):
     argv = [sys.argv[0], *context.args]
-    run_with_debugging(bind_ip, port, py_file, run_as_module, argv, not no_post_mortem, use_set_trace)
+    run_with_debugging(py_file, run_as_module=run_as_module, argv=argv, use_post_mortem=not no_post_mortem,
+                       use_set_trace=use_set_trace, ip=bind_ip, port=port)
 
 
 if __name__ == '__main__':

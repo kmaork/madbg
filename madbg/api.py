@@ -2,9 +2,10 @@ import os
 import re
 import signal
 import sys
-import traceback
+from traceback import format_exc
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
+from inspect import currentframe
 from pdb import Restart
 from hypno import inject_py
 
@@ -21,7 +22,7 @@ def _inject_set_trace(pid, ip=DEFAULT_IP, port=DEFAULT_PORT):
     assert re.fullmatch('[.0-9]+', ip)
     assert isinstance(port, int)
     sig_num = DEBUGGER_CONNECTED_SIGNAL.value
-    inject_py(pid, f'__import__("signal").signal({sig_num},lambda _,f:__import__("madbg").set_trace("{ip}",{port},f))')
+    inject_py(pid, f'__import__("signal").signal({sig_num},lambda _,f:__import__("madbg").set_trace(f,"{ip}",{port}))')
     os.kill(pid, sig_num)
 
 
@@ -31,9 +32,9 @@ def attach_to_process(pid: int, port=DEFAULT_PORT, connect_timeout=5):
     connect_to_debugger(ip, port, timeout=connect_timeout)
 
 
-def set_trace(ip=DEFAULT_IP, port=DEFAULT_PORT, frame=None):
+def set_trace(frame=None, ip=DEFAULT_IP, port=DEFAULT_PORT):
     if frame is None:
-        frame = sys._getframe(1)
+        frame = currentframe().f_back
     RemoteIPythonDebugger.connect_and_set_trace(ip, port, frame)
 
 
@@ -67,29 +68,32 @@ def set_trace_on_connect(ip=DEFAULT_IP, port=DEFAULT_PORT):
     debugger_future = ThreadPoolExecutor(1).submit(_wait_for_connection_and_send_signal, ip, port)
 
 
-def post_mortem(ip=DEFAULT_IP, port=DEFAULT_PORT, traceback=None):
+def post_mortem(traceback=None, ip=DEFAULT_IP, port=DEFAULT_PORT):
     traceback = traceback or sys.exc_info()[2] or sys.last_traceback
     with RemoteIPythonDebugger.connect_and_start(ip, port) as debugger:
         debugger.post_mortem(traceback)
 
 
-def run_with_debugging(ip, port, python_file, run_as_module, argv, use_post_mortem=True, use_set_trace=False,
-                       debugger=None):
+def run_with_debugging(python_file, run_as_module=False, argv=None, use_post_mortem=True, use_set_trace=False,
+                       ip=DEFAULT_IP, port=DEFAULT_PORT, debugger=None):
+    if argv is None:
+        argv = []
     with RemoteIPythonDebugger.connect_and_start(ip, port) if debugger is None else nullcontext(debugger) as debugger:
         try:
             debugger.run_py(python_file, run_as_module, argv, set_trace=use_set_trace)
         except Restart:
             print("Restarting", python_file, "with arguments:", file=debugger.stdout)
             print("\t" + " ".join(argv), file=debugger.stdout)
-            return run_with_debugging(ip, port, python_file, run_as_module, argv, use_post_mortem, use_set_trace,
-                                      debugger)
+            return run_with_debugging(python_file, run_as_module=run_as_module, argv=argv,
+                                      use_post_mortem=use_post_mortem, use_set_trace=use_set_trace,
+                                      ip=ip, port=port, debugger=debugger)
         except SystemExit as e:
             print(f"The program exited via sys.exit(). Exit status: {e.code}", end=' ', file=debugger.stdout)
         except SyntaxError:
             raise
         except:
             if use_post_mortem:
-                print(traceback.format_exc(), file=debugger.stdout)
+                print(format_exc(), file=debugger.stdout)
                 debugger.post_mortem(sys.exc_info()[2])
             else:
                 raise
