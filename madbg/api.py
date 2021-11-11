@@ -74,10 +74,9 @@ def post_mortem(traceback=None, ip=DEFAULT_IP, port=DEFAULT_PORT):
         debugger.post_mortem(traceback)
 
 
-def run_with_debugging(python_file, run_as_module=False, argv=None, use_post_mortem=True, use_set_trace=False,
+def run_with_debugging(python_file, run_as_module=False, argv=(), use_post_mortem=True, use_set_trace=False,
                        ip=DEFAULT_IP, port=DEFAULT_PORT, debugger=None):
-    if argv is None:
-        argv = []
+    argv = [python_file, *argv]
     with RemoteIPythonDebugger.connect_and_start(ip, port) if debugger is None else nullcontext(debugger) as debugger:
         try:
             debugger.run_py(python_file, run_as_module, argv, set_trace=use_set_trace)
@@ -95,8 +94,7 @@ def run_with_debugging(python_file, run_as_module=False, argv=None, use_post_mor
             if use_post_mortem:
                 print(format_exc(), file=debugger.stdout)
                 debugger.post_mortem(sys.exc_info()[2])
-            else:
-                raise
+            raise
         else:
             print(f'{python_file} finished running successfully', file=debugger.stdout)
 

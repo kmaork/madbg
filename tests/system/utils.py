@@ -4,11 +4,13 @@ import select
 import socket
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import closing
+from pathlib import Path
 
 import madbg
 from madbg.consts import STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO
 
 JOIN_TIMEOUT = 5
+SCRIPTS_PATH = Path(__file__).parent / 'scripts'
 
 
 def enter_pty(attach_as_ctty, connect_output_to_pty=True):
