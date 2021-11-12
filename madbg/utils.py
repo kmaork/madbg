@@ -1,6 +1,7 @@
 import atexit
 import socket
 import sys
+import threading
 from collections import defaultdict
 from concurrent.futures.thread import ThreadPoolExecutor
 from contextlib import contextmanager, ExitStack
@@ -31,10 +32,20 @@ def get_client_connection(ip, port):
         sock.close()
 
 
+def register_atexit(callback):
+    if sys.version_info >= (3, 9):
+        # Since python3.9, ThreadPoolExecutor threads are non-daemon, which means they are joined before atexit
+        # hooks run - https://bugs.python.org/issue39812
+        # Therefore we use threading._register_atexit here because this is used to close such threads.
+        threading._register_atexit(callback)
+    else:
+        atexit.register(callback)
+
+
 def use_context(context_manager, exit_stack=None):
     if exit_stack is None:
         exit_stack = ExitStack()
-        atexit.register(exit_stack.close)
+        register_atexit(exit_stack.close)
     context_value = exit_stack.enter_context(context_manager)
     return context_value, exit_stack
 
