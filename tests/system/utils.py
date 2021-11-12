@@ -9,7 +9,8 @@ from pathlib import Path
 import madbg
 from madbg.consts import STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO
 
-JOIN_TIMEOUT = 5
+JOIN_TIMEOUT = 50
+CONNECT_TIMEOUT = 50
 SCRIPTS_PATH = Path(__file__).parent / 'scripts'
 
 
@@ -28,6 +29,7 @@ def enter_pty(attach_as_ctty, connect_output_to_pty=True):
         os.close(os.open(os.ttyname(slave_fd), os.O_RDWR))  # Set the PTY to be our CTTY
     for fd_to_override in (STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO) if connect_output_to_pty else (STDIN_FILENO,):
         os.dup2(slave_fd, fd_to_override)
+    os.close(slave_fd)
     return master_fd
 
 
@@ -56,15 +58,18 @@ def run_client(port: int, debugger_input: bytes):
     """ Run client process and return client's tty output """
     master_fd = enter_pty(True)
     os.write(master_fd, debugger_input)
-    while True:
-        try:
-            madbg.client.connect_to_debugger(port=port)
-        except ConnectionRefusedError:
-            pass
-        else:
-            break
+    madbg.client.connect_to_debugger(port=port, timeout=CONNECT_TIMEOUT)
+    # Close the slave fd
+    os.close(STDIN_FILENO)
     os.close(STDOUT_FILENO)
+    os.close(STDERR_FILENO)
     data = b''
     while select.select([master_fd], [], [], 0)[0]:
         data += os.read(master_fd, 1024)
+    # while True:
+    #     buffer = os.read(master_fd, 1024)
+    #     if not buffer:
+    #         break
+    #     data += buffer
+
     return data

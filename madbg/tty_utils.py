@@ -3,6 +3,7 @@ import os
 import pty
 import struct
 from contextlib import contextmanager
+from dataclasses import dataclass
 from multiprocessing.pool import Pool
 import signal
 import fcntl
@@ -77,40 +78,49 @@ def detach_current_ctty():
         os.close(ctty_fd)
 
 
-def set_ctty(fd):
-    detach_current_ctty()
-    attach_ctty(fd)
+@dataclass
+class PTY:
+    master_fd: int
+    slave_fd: int
+    _closed: bool = False
 
+    def resize(self, rows, cols):
+        winsize = struct.pack("HHHH", rows, cols, 0, 0)
+        fcntl.ioctl(self.slave_fd, termios.TIOCSWINSZ, winsize)
 
-def resize_terminal(fd, rows, cols):
-    winsize = struct.pack("HHHH", rows, cols, 0, 0)
-    fcntl.ioctl(fd, termios.TIOCSWINSZ, winsize)
+    def close(self):
+        if not self._closed:
+            with ignore_signal(signal.SIGHUP):
+                os.close(self.master_fd)
+            self._closed = True
 
+    def set_tty_attrs(self, tc_attrs, when=termios.TCSANOW):
+        return
+        IFLAG = 0
+        OFLAG = 1
+        CFLAG = 2
+        LFLAG = 3
+        ISPEED = 4
+        OSPEED = 5
+        CC = 6
+        tc_attrs = tc_attrs[:]
+        current_attrs = termios.tcgetattr(fd)
+        tc_attrs[CC] = current_attrs[termios.CC]
+        termios.tcsetattr(self.slave_fd, when, tc_attrs)
 
-def modify_terminal(fd, tc_attrs, when=termios.TCSANOW):
-    return
-    IFLAG = 0
-    OFLAG = 1
-    CFLAG = 2
-    LFLAG = 3
-    ISPEED = 4
-    OSPEED = 5
-    CC = 6
-    tc_attrs = tc_attrs[:]
-    current_attrs = termios.tcgetattr(fd)
-    tc_attrs[CC] = current_attrs[termios.CC]
-    termios.tcsetattr(fd, when, tc_attrs)
+    def make_ctty(self):
+        detach_current_ctty()
+        attach_ctty(self.slave_fd)
 
-
-@contextmanager
-def open_pty():
-    master_fd, slave_fd = pty.openpty()
-    try:
-        yield master_fd, slave_fd
-    finally:
-        with ignore_signal(signal.SIGHUP):
-            os.close(master_fd)
-            os.close(slave_fd)
+    @classmethod
+    @contextmanager
+    def open(cls):
+        master_fd, slave_fd = pty.openpty()
+        self = cls(master_fd, slave_fd)
+        try:
+            yield self
+        finally:
+            self.close()
 
 
 def print_to_ctty(string):

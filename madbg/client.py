@@ -7,7 +7,7 @@ import atexit
 import termios
 from contextlib import contextmanager
 
-from .communication import pipe_until_closed, send_message
+from .communication import Piping, send_message
 from .consts import DEFAULT_IP, DEFAULT_PORT, STDIN_FILENO, STDOUT_FILENO, DEFAULT_CONNECT_TIMEOUT
 
 
@@ -71,4 +71,4 @@ def connect_to_debugger(ip=DEFAULT_IP, port=DEFAULT_PORT, timeout=DEFAULT_CONNEC
         send_message(socket, term_data)
         with prepare_terminal():
             socket_fd = socket.fileno()
-            pipe_until_closed({STDIN_FILENO: socket_fd, socket_fd: STDOUT_FILENO})
+            Piping({STDIN_FILENO: socket_fd, socket_fd: STDOUT_FILENO}).run()

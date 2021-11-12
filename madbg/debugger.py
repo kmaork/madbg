@@ -8,10 +8,11 @@ from IPython.terminal.debugger import TerminalPdb
 from IPython.terminal.interactiveshell import TerminalInteractiveShell
 from prompt_toolkit.input.vt100 import Vt100Input
 from prompt_toolkit.output.vt100 import Vt100_Output
+from inspect import currentframe
 
-from .utils import preserve_sys_state, get_client_connection, use_context
-from .tty_utils import print_to_ctty, open_pty, resize_terminal, modify_terminal, set_ctty
-from .communication import receive_message, pipe_in_background
+from .utils import preserve_sys_state, get_client_connection, use_context, run_thread
+from .tty_utils import print_to_ctty, PTY
+from .communication import receive_message, Piping
 
 
 class RemoteIPythonDebugger(TerminalPdb):
@@ -58,7 +59,7 @@ class RemoteIPythonDebugger(TerminalPdb):
         """ Overriding super to add the done_callback argument, allowing cleanup after a debug session """
         td = lambda *args: self.trace_dispatch(*args, done_callback=done_callback)
         if frame is None:
-            frame = sys._getframe().f_back
+            frame = currentframe().f_back
         self.reset()
         while frame:
             frame.f_trace = td
@@ -116,24 +117,22 @@ class RemoteIPythonDebugger(TerminalPdb):
     def start(cls, sock_fd):
         term_data = receive_message(sock_fd)
         term_attrs, term_type, term_size = term_data['term_attrs'], term_data['term_type'], term_data['term_size']
-        with open_pty() as (master_fd, slave_fd):
-            resize_terminal(slave_fd, term_size[0], term_size[1])
-            modify_terminal(slave_fd, term_attrs)
-            set_ctty(slave_fd)
-            with pipe_in_background({sock_fd: master_fd, master_fd: sock_fd}):
-                slave_reader = os.fdopen(slave_fd, 'r')
-                slave_writer = os.fdopen(slave_fd, 'w')
+        with PTY.open() as pty:
+            pty.resize(term_size[0], term_size[1])
+            pty.set_tty_attrs(term_attrs)
+            pty.make_ctty()
+            piping = Piping({sock_fd: pty.master_fd, pty.master_fd: sock_fd})
+            with run_thread(piping.run):
+                slave_reader = os.fdopen(pty.slave_fd, 'r')
+                slave_writer = os.fdopen(pty.slave_fd, 'w')
                 try:
                     yield cls(slave_reader, slave_writer, term_type)
                 except Exception:
                     print(traceback.format_exc(), file=slave_writer)
                     raise
                 finally:
-                    # We flush to make sure the message is written before the last pipe iteration
                     print('Closing connection', file=slave_writer, flush=True)
-                    # TODO: solve race
-                    import time
-                    time.sleep(0.05)
+                    slave_writer.close()
 
     @classmethod
     @contextmanager
