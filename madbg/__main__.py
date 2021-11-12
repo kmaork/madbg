@@ -34,7 +34,9 @@ def attach(pid, port, timeout):
     attach_to_process(pid, port, connect_timeout=timeout)
 
 
-@cli.command(context_settings=dict(ignore_unknown_options=True,
+@cli.command(help='Run the given script or module with debugging features. '
+                  'Flags given after the script name will be passed to the script as is.',
+             context_settings=dict(ignore_unknown_options=True,
                                    allow_interspersed_args=False,
                                    allow_extra_args=True))
 @option('-i', '--bind_ip', type=str, default=DEFAULT_IP, show_default=True)
