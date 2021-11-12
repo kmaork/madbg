@@ -11,7 +11,7 @@ from hypno import inject_py
 
 from .client import connect_to_debugger
 from .utils import use_context
-from .consts import DEFAULT_IP, DEFAULT_PORT
+from .consts import DEFAULT_IP, DEFAULT_PORT, DEFAULT_CONNECT_TIMEOUT
 from .debugger import RemoteIPythonDebugger
 
 DEBUGGER_CONNECTED_SIGNAL = signal.SIGUSR1
@@ -26,7 +26,7 @@ def _inject_set_trace(pid, ip=DEFAULT_IP, port=DEFAULT_PORT):
     os.kill(pid, sig_num)
 
 
-def attach_to_process(pid: int, port=DEFAULT_PORT, connect_timeout=5):
+def attach_to_process(pid: int, port=DEFAULT_PORT, connect_timeout=DEFAULT_CONNECT_TIMEOUT):
     ip = '127.0.0.1'
     _inject_set_trace(pid, ip, port)
     connect_to_debugger(ip, port, timeout=connect_timeout)

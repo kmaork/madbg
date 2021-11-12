@@ -8,7 +8,7 @@ import termios
 from contextlib import contextmanager
 
 from .communication import pipe_until_closed, send_message
-from .consts import DEFAULT_IP, DEFAULT_PORT, STDIN_FILENO, STDOUT_FILENO
+from .consts import DEFAULT_IP, DEFAULT_PORT, STDIN_FILENO, STDOUT_FILENO, DEFAULT_CONNECT_TIMEOUT
 
 
 def get_tty_handle():
@@ -60,7 +60,7 @@ def connect_to_server(ip, port, timeout):
         s.close()
 
 
-def connect_to_debugger(ip=DEFAULT_IP, port=DEFAULT_PORT, timeout=0.3):
+def connect_to_debugger(ip=DEFAULT_IP, port=DEFAULT_PORT, timeout=DEFAULT_CONNECT_TIMEOUT):
     with connect_to_server(ip, port, timeout) as socket:
         tty_handle = get_tty_handle()
         term_size = os.get_terminal_size(tty_handle)

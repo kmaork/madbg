@@ -2,8 +2,12 @@ import sys
 from click import ClickException, group, argument, option, pass_context
 
 from madbg.client import connect_to_debugger
-from madbg.consts import DEFAULT_IP, DEFAULT_PORT
+from madbg.consts import DEFAULT_IP, DEFAULT_PORT, DEFAULT_CONNECT_TIMEOUT
 from madbg import run_with_debugging, attach_to_process
+
+port_argument = argument('port', type=int, default=DEFAULT_PORT)
+connect_timeout_option = option('-t', '--timeout', type=float, default=DEFAULT_CONNECT_TIMEOUT, show_default=True,
+                                help='Connection timeout in seconds')
 
 
 @group(context_settings=dict(help_option_names=['-h', '--help']))
@@ -13,19 +17,21 @@ def cli():
 
 @cli.command()
 @argument('ip', type=str, default=DEFAULT_IP)
-@argument('port', type=int, default=DEFAULT_PORT)
-def connect(ip, port):
+@port_argument
+@connect_timeout_option
+def connect(ip, port, timeout):
     try:
-        connect_to_debugger(ip, port)
+        connect_to_debugger(ip, port, timeout=timeout)
     except ConnectionRefusedError:
-        raise ClickException('Connection refused :(')
+        raise ClickException('Connection refused - did you use the right port?')
 
 
 @cli.command()
 @argument('pid', type=int)
-@argument('port', type=int, default=DEFAULT_PORT)
-def attach(pid, port):
-    attach_to_process(pid, port)
+@port_argument
+@connect_timeout_option
+def attach(pid, port, timeout):
+    attach_to_process(pid, port, connect_timeout=timeout)
 
 
 @cli.command(context_settings=dict(ignore_unknown_options=True,
