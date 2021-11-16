@@ -25,7 +25,7 @@ def test_set_trace(port, start_debugger_with_ctty):
     client_future = run_in_process(run_client, port, b'value_to_change += 1\nc\n')
     assert debugger_future.result(JOIN_TIMEOUT)
     client_output = client_future.result(JOIN_TIMEOUT)
-    # TODO: why does this assert fail? Problem in piping?
+    # TODO: waiting for fix in run_client
     # assert b'Closing connection' in client_output
 
 

@@ -18,7 +18,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install dependencies
-        run: pip install tox tox-wheel
+        run: pip install tox tox-gh-actions tox-wheel
       - name: Test sdist with tox
         run: python -m tox
       - name: Upload sdist

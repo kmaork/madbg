@@ -1,12 +1,14 @@
 import pickle
-import select
 import fcntl
 import os
 import struct
+from collections import defaultdict
 from contextlib import contextmanager
+from functools import partial
+from asyncio import new_event_loop
 from io import BytesIO
 
-from madbg.utils import loop_in_thread, opposite_dict
+from .utils import run_thread, opposite_dict
 
 MESSAGE_LENGTH_FMT = 'I'
 
@@ -28,41 +30,51 @@ def blocking_read(fd, n):
     return io.getvalue()
 
 
-def pipe_once(pipe_dict):
-    # If read fails, write will fail. But if write fail, we might be still able to read.
-    # TODO: use wakeup fd instead of 0 timeout polling (os.pipe? eventfd?)
-    # TODO: can use splice or ebpf
-    if not pipe_dict:
-        return
-    reverse_pipe_dict = opposite_dict(pipe_dict)
-    for read_fd in select.select(list(pipe_dict), [], [], 0)[0]:
-        write_fd = pipe_dict[read_fd]
+class Piping:
+    def __init__(self, pipe_dict):
+        self.buffers = defaultdict(bytes)
+        self.loop = new_event_loop()
+        for src_fd, dest_fd in pipe_dict.items():
+            self.loop.add_reader(src_fd, partial(self._read, src_fd, dest_fd))
+            self.loop.add_writer(dest_fd, partial(self._write, dest_fd))
+        self.readers_to_writers = dict(pipe_dict)
+        self.writers_to_readers = opposite_dict(pipe_dict)
+
+    def _remove_writer(self, writer_fd):
+        self.loop.remove_writer(writer_fd)
+        for reader_fd in self.writers_to_readers.pop(writer_fd):
+            self.readers_to_writers.pop(reader_fd)
+
+    def _remove_reader(self, reader_fd):
+        # remove all writers that im the last to write to, remove all that write to me, if nothing left stop loop
+        self.loop.remove_reader(reader_fd)
+        writer_fd = self.readers_to_writers.pop(reader_fd)
+        writer_readers = self.writers_to_readers[writer_fd]
+        writer_readers.remove(reader_fd)
+        if not writer_fd:
+            self._remove_writer(writer_fd)
+
+    def _read(self, src_fd, dest_fd):
         try:
-            data = os.read(read_fd, 1024)
-            if not data:
-                raise OSError('EOF')
+            data = os.read(src_fd, 1024)
         except OSError:
-            pipe_dict.pop(read_fd, None)
-            for writing_fd in reverse_pipe_dict[read_fd]:
-                pipe_dict.pop(writing_fd, None)
+            data = ''
+        if data:
+            self.buffers[dest_fd] += data
         else:
-            try:
-                os.write(write_fd, data)
-            except OSError:
-                pipe_dict.pop(read_fd, None)
+            self._remove_reader(src_fd)
+            if src_fd in self.writers_to_readers:
+                self._remove_writer(src_fd)
+            if not self.readers_to_writers:
+                self.loop.stop()
 
+    def _write(self, dest_fd):
+        buffer = self.buffers[dest_fd]
+        if buffer:
+            self.buffers[dest_fd] = buffer[os.write(dest_fd, buffer):]
 
-@contextmanager
-def pipe_in_background(pipe_dict):
-    pipe_dict = dict(pipe_dict)
-    with loop_in_thread(pipe_once, pipe_dict):
-        yield
-
-
-def pipe_until_closed(pipe_dict):
-    pipe_dict = dict(pipe_dict)
-    while pipe_dict:
-        pipe_once(pipe_dict)
+    def run(self):
+        self.loop.run_forever()
 
 
 def send_message(sock, obj):
