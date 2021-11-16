@@ -60,7 +60,8 @@ def connect_to_server(ip, port, timeout):
         s.close()
 
 
-def connect_to_debugger(ip=DEFAULT_IP, port=DEFAULT_PORT, timeout=DEFAULT_CONNECT_TIMEOUT):
+def connect_to_debugger(ip=DEFAULT_IP, port=DEFAULT_PORT, timeout=DEFAULT_CONNECT_TIMEOUT,
+                        in_fd=STDIN_FILENO, out_fd=STDOUT_FILENO):
     with connect_to_server(ip, port, timeout) as socket:
         tty_handle = get_tty_handle()
         term_size = os.get_terminal_size(tty_handle)
@@ -71,4 +72,4 @@ def connect_to_debugger(ip=DEFAULT_IP, port=DEFAULT_PORT, timeout=DEFAULT_CONNEC
         send_message(socket, term_data)
         with prepare_terminal():
             socket_fd = socket.fileno()
-            Piping({STDIN_FILENO: socket_fd, socket_fd: STDOUT_FILENO}).run()
+            Piping({in_fd: socket_fd, socket_fd: out_fd}).run()
