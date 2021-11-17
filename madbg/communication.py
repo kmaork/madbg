@@ -3,12 +3,11 @@ import fcntl
 import os
 import struct
 from collections import defaultdict
-from contextlib import contextmanager
 from functools import partial
 from asyncio import new_event_loop
 from io import BytesIO
 
-from .utils import run_thread, opposite_dict
+from .utils import opposite_dict
 
 MESSAGE_LENGTH_FMT = 'I'
 
@@ -75,6 +74,10 @@ class Piping:
 
     def run(self):
         self.loop.run_forever()
+        # TODO: is this needed?
+        # for dest_fd, buffer in self.buffers.items():
+        #     while buffer:
+        #         buffer = buffer[os.write(dest_fd, buffer):]
 
 
 def send_message(sock, obj):

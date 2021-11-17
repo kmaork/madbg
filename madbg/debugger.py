@@ -4,6 +4,8 @@ import sys
 import traceback
 from bdb import BdbQuit
 from contextlib import contextmanager, nullcontext
+from termios import tcdrain
+
 from IPython.terminal.debugger import TerminalPdb
 from IPython.terminal.interactiveshell import TerminalInteractiveShell
 from prompt_toolkit.input.vt100 import Vt100Input
@@ -132,6 +134,7 @@ class RemoteIPythonDebugger(TerminalPdb):
                     raise
                 finally:
                     print('Closing connection', file=slave_writer, flush=True)
+                    tcdrain(pty.slave_fd)
                     slave_writer.close()
 
     @classmethod

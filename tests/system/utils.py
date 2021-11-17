@@ -1,3 +1,4 @@
+import atexit
 import os
 import pty
 import select
@@ -8,6 +9,7 @@ from pathlib import Path
 
 from madbg import client
 from madbg.consts import STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO
+from madbg.tty_utils import PTY
 
 JOIN_TIMEOUT = 5
 CONNECT_TIMEOUT = 5
@@ -18,13 +20,19 @@ def run_in_process(func, *args, **kwargs):
     return ProcessPoolExecutor(1).submit(func, *args, **kwargs)
 
 
-def run_script(script, start_with_ctty, args, kwargs):
+def _run_script(script, start_with_ctty, args, kwargs):
+    """
+    Meant to be called inside a python subprocess, do NOT call directly.
+    """
     enter_pty(start_with_ctty)
-    return script(*args, **kwargs)
+    result = script(*args, **kwargs)
+    # Python-spawned subprocesses do not call exit funcs - https://stackoverflow.com/q/34506638/2907819
+    atexit._run_exitfuncs()
+    return result
 
 
 def run_script_in_process(script, start_with_ctty, *args, **kwargs):
-    return ProcessPoolExecutor(1).submit(run_script, script, start_with_ctty, args, kwargs)
+    return run_in_process(_run_script, script, start_with_ctty, args, kwargs)
 
 
 def find_free_port() -> int:
@@ -59,14 +67,8 @@ def run_client(port: int, debugger_input: bytes):
     master_fd, slave_fd = enter_pty(True, connect_stdio_to_pty=False)
     os.write(master_fd, debugger_input)
     client.connect_to_debugger(port=port, timeout=CONNECT_TIMEOUT, in_fd=slave_fd, out_fd=slave_fd)
-    os.close(slave_fd)
     data = b''
-    # TODO: this should work...
-    # while True:
-    #     try:
-    #         data += os.read(master_fd, 4096)
-    #     except OSError:
-    #         break
     while select.select([master_fd], [], [], 0)[0]:
         data += os.read(master_fd, 4096)
+    PTY(master_fd, slave_fd).close()
     return data
