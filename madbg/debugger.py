@@ -147,6 +147,5 @@ class RemoteIPythonDebugger(TerminalPdb):
     @classmethod
     @contextmanager
     def connect_and_start(cls, ip, port):
-        with cls.connect(ip, port) as sock_fd:
-            with cls.start(sock_fd) as debugger:
-                yield debugger
+        with cls.connect(ip, port) as sock_fd, cls.start(sock_fd) as debugger:
+            yield debugger
