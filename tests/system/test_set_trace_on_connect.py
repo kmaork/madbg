@@ -20,6 +20,12 @@ def test_set_trace_on_connect(port, start_debugger_with_ctty):
     # let the loop run a little
     time.sleep(0.5)
     assert not debugger_future.done()
+    # Test we can connect twice
+    run_in_process(run_client, port, b'q\n').result(JOIN_TIMEOUT)
     client_future = run_in_process(run_client, port, b'conti = False\nc\n')
     assert debugger_future.result(JOIN_TIMEOUT)
     client_future.result(JOIN_TIMEOUT)
+
+
+def test_set_trace_on_connect_can_exit(port, start_debugger_with_ctty):
+    run_script_in_process(madbg.set_trace_on_connect, start_debugger_with_ctty, port=port).result(JOIN_TIMEOUT)

@@ -7,8 +7,9 @@ from madbg.debugger import RemoteIPythonDebugger
 from .utils import run_in_process, run_script_in_process, JOIN_TIMEOUT, run_client
 
 
-def set_trace_script(port):
-    madbg.set_trace(port=port)
+def set_trace_script(port, times=1):
+    for _ in range(times):
+        madbg.set_trace(port=port)
 
 
 def set_trace_and_expect_var_to_change_script(port) -> bool:
@@ -26,6 +27,13 @@ def test_set_trace(port, start_debugger_with_ctty):
     assert debugger_future.result(JOIN_TIMEOUT)
     client_output = client_future.result(JOIN_TIMEOUT)
     assert b'Closing connection' in client_output
+
+
+def test_set_trace_and_connect_twice(port, start_debugger_with_ctty):
+    debugger_future = run_script_in_process(set_trace_script, start_debugger_with_ctty, port, 2)
+    assert b'Closing connection' in run_in_process(run_client, port, b'q\n').result(JOIN_TIMEOUT)
+    assert b'Closing connection' in run_in_process(run_client, port, b'q\n').result(JOIN_TIMEOUT)
+    debugger_future.result(JOIN_TIMEOUT)
 
 
 def test_set_trace_and_quit_debugger(port, start_debugger_with_ctty):

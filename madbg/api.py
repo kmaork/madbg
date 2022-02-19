@@ -2,14 +2,17 @@ import os
 import re
 import signal
 import sys
+from select import select
 from traceback import format_exc
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from inspect import currentframe
 from pdb import Restart
 from hypno import inject_py
+from fcntl import fcntl, F_GETFL, F_SETFL, F_SETOWN
+from os import O_ASYNC, getpid
 
 from .client import connect_to_debugger
+from .tty_utils import print_to_ctty, set_handler
 from .utils import use_context
 from .consts import DEFAULT_IP, DEFAULT_PORT, DEFAULT_CONNECT_TIMEOUT
 from .debugger import RemoteIPythonDebugger
@@ -35,16 +38,8 @@ def attach_to_process(pid: int, port=DEFAULT_PORT, connect_timeout=DEFAULT_CONNE
 def set_trace(frame=None, ip=DEFAULT_IP, port=DEFAULT_PORT):
     if frame is None:
         frame = currentframe().f_back
-    RemoteIPythonDebugger.connect_and_set_trace(ip, port, frame)
-
-
-def _wait_for_connection_and_send_signal(ip, port):
-    try:
-        sock, exit_stack = use_context(RemoteIPythonDebugger.connect(ip, port))
-        return sock, exit_stack
-    finally:
-        # Invoke the signal handler that will try to fetch this future's result and raise this exception
-        os.kill(0, DEBUGGER_CONNECTED_SIGNAL)
+    debugger, exit_stack = use_context(RemoteIPythonDebugger.connect_and_start(ip, port))
+    debugger.set_trace(frame, done_callback=exit_stack.close)
 
 
 def set_trace_on_connect(ip=DEFAULT_IP, port=DEFAULT_PORT):
@@ -52,20 +47,29 @@ def set_trace_on_connect(ip=DEFAULT_IP, port=DEFAULT_PORT):
     Set up a debugger in another thread, which will signal the main thread when it receives a connection.
     Also set up a signal handler that will call set_trace when the signal is received.
     """
+    server_socket, server_exit_stack = use_context(RemoteIPythonDebugger.get_server_socket(ip, port))
 
-    def new_handler(_, frame):
-        signal.signal(DEBUGGER_CONNECTED_SIGNAL, old_handler)
-        sock, exit_stack = debugger_future.result()
+    def sigio_handler(signum, frame):
+        if select([server_socket], [], [], 0)[0]:
+            handler_exit_stack.close()
+            sock, _ = server_socket.accept()
+            server_exit_stack.close()
+            debugger, debugger_exit_stack = use_context(RemoteIPythonDebugger.start_from_new_connection(sock))
 
-        def on_trace_done():
-            exit_stack.close()
-            set_trace_on_connect(ip, port)
+            def on_trace_done():
+                debugger_exit_stack.close()
+                set_trace_on_connect(ip, port)
 
-        debugger, _ = use_context(RemoteIPythonDebugger.start(sock), exit_stack)
-        debugger.set_trace(frame, done_callback=lambda: on_trace_done)
+            debugger.set_trace(frame, done_callback=on_trace_done)
+        elif not isinstance(old_handler, signal.Handlers):
+            old_handler(signum, frame)
 
-    old_handler = signal.signal(DEBUGGER_CONNECTED_SIGNAL, new_handler)
-    debugger_future = ThreadPoolExecutor(1).submit(_wait_for_connection_and_send_signal, ip, port)
+    old_handler, handler_exit_stack = use_context(set_handler(signal.SIGIO, sigio_handler))
+    server_fd = server_socket.fileno()
+    fcntl(server_fd, F_SETOWN, getpid())
+    fcntl(server_fd, F_SETFL, fcntl(server_fd, F_GETFL, 0) | O_ASYNC)
+    server_socket.listen(1)
+    print_to_ctty(f'Listening for debugger client on {ip}:{port}')
 
 
 def post_mortem(traceback=None, ip=DEFAULT_IP, port=DEFAULT_PORT):

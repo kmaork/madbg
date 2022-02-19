@@ -1,5 +1,6 @@
 import runpy
 import os
+import socket
 import sys
 import traceback
 from bdb import BdbQuit
@@ -12,7 +13,7 @@ from prompt_toolkit.input.vt100 import Vt100Input
 from prompt_toolkit.output.vt100 import Vt100_Output
 from inspect import currentframe
 
-from .utils import preserve_sys_state, get_client_connection, use_context, run_thread
+from .utils import preserve_sys_state, run_thread
 from .tty_utils import print_to_ctty, PTY
 from .communication import receive_message, Piping
 
@@ -24,8 +25,7 @@ class RemoteIPythonDebugger(TerminalPdb):
     we can use it to allow line editing and tab completion for files other than stdio (in this case, the pty).
     Because we need to provide the stdin and stdout params to the __init__, and they require a connection to the client,
     """
-    DEBUGGING_GLOBAL = 'DEBUGGING_WITH_MADBG'
-
+    _DEBUGGING_GLOBAL = 'DEBUGGING_WITH_MADBG'
     # TODO: should this be a per-thread singleton? Because sys.settrace is singletonic
 
     def __init__(self, stdin, stdout, term_type):
@@ -40,11 +40,11 @@ class RemoteIPythonDebugger(TerminalPdb):
         """
         Overriding super to allow the check_debugging_global and done_callback args.
 
-        :param check_debugging_global: Whether to start debugging only if DEBUGGING_GLOBAL is in the globals.
+        :param check_debugging_global: Whether to start debugging only if _DEBUGGING_GLOBAL is in the globals.
         :param done_callback: a callable to be called when the debug session ends.
         """
         if check_debugging_global:
-            if self.DEBUGGING_GLOBAL in frame.f_globals:
+            if self._DEBUGGING_GLOBAL in frame.f_globals:
                 self.set_trace(frame, done_callback=done_callback)
             else:
                 return
@@ -84,7 +84,7 @@ class RemoteIPythonDebugger(TerminalPdb):
 
     def run_py(self, python_file, run_as_module, argv, set_trace=False):
         run_name = '__main__'
-        globals = {self.DEBUGGING_GLOBAL: True}
+        globals = {self._DEBUGGING_GLOBAL: True}
         with preserve_sys_state():
             sys.argv = argv
             if not run_as_module:
@@ -106,13 +106,6 @@ class RemoteIPythonDebugger(TerminalPdb):
         finally:
             self.quitting = True
             sys.settrace(None)
-
-    @classmethod
-    def connect_and_set_trace(cls, ip, port, frame=None):
-        if frame is None:
-            frame = sys._getframe().f_back
-        debugger, exit_stack = use_context(cls.connect_and_start(ip, port))
-        debugger.set_trace(frame, done_callback=exit_stack.close)
 
     @classmethod
     @contextmanager
@@ -139,13 +132,32 @@ class RemoteIPythonDebugger(TerminalPdb):
 
     @classmethod
     @contextmanager
-    def connect(cls, ip, port):
-        print_to_ctty(f'Waiting for connection from debugger console on {ip}:{port}')
-        with get_client_connection(ip, port) as sock_fd:
-            yield sock_fd
+    def get_server_socket(cls, ip: str, port: int) -> socket.socket:
+        """
+        Return a new server socket for client to connect to. The caller is responsible for closing it.
+        """
+        server_socket = socket.socket()
+        server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, True)
+        server_socket.bind((ip, port))
+        try:
+            yield server_socket
+        finally:
+            server_socket.close()
 
     @classmethod
     @contextmanager
+    def start_from_new_connection(cls, sock: socket.socket):
+        print_to_ctty(f'Debugger client connected from {sock.getpeername()}')
+        try:
+            with cls.start(sock.fileno()) as debugger:
+                yield debugger
+        finally:
+            sock.close()
+
+    @classmethod
     def connect_and_start(cls, ip, port):
-        with cls.connect(ip, port) as sock_fd, cls.start(sock_fd) as debugger:
-            yield debugger
+        with cls.get_server_socket(ip, port) as server_socket:
+            server_socket.listen(1)
+            print_to_ctty(f'Waiting for debugger client on {ip}:{port}')
+            sock, _ = server_socket.accept()
+        return cls.start_from_new_connection(sock)
