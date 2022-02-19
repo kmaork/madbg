@@ -34,12 +34,16 @@ def make_session_leader():
 
 
 @contextmanager
-def ignore_signal(signal_num: int):
-    old = signal.signal(signal_num, signal.SIG_IGN)
+def set_handler(sig, handler):
+    old = signal.signal(sig, handler)
     try:
-        yield
+        yield old
     finally:
-        signal.signal(signal_num, old)
+        signal.signal(sig, old)
+
+
+def ignore_signal(sig):
+    return set_handler(sig, signal.SIG_IGN)
 
 
 def detach_ctty(ctty_fd):
