@@ -36,6 +36,12 @@ def test_set_trace_and_connect_twice(port, start_debugger_with_ctty):
     debugger_future.result(JOIN_TIMEOUT)
 
 
+def test_set_trace_twice_and_continue(port, start_debugger_with_ctty):
+    debugger_future = run_script_in_process(set_trace_script, start_debugger_with_ctty, port, 2)
+    assert b'Closing connection' in run_in_process(run_client, port, b'c\nq\n').result(JOIN_TIMEOUT)
+    debugger_future.result(JOIN_TIMEOUT)
+
+
 def test_set_trace_and_quit_debugger(port, start_debugger_with_ctty):
     debugger_future = run_script_in_process(set_trace_script, start_debugger_with_ctty, port)
     client_future = run_in_process(run_client, port, b'q\n')

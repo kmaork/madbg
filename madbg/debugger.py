@@ -1,3 +1,4 @@
+from __future__ import annotations
 import runpy
 import os
 import socket
@@ -6,6 +7,7 @@ import traceback
 from bdb import BdbQuit
 from contextlib import contextmanager, nullcontext
 from termios import tcdrain
+from typing import Optional, ContextManager
 
 from IPython.terminal.debugger import TerminalPdb
 from IPython.terminal.interactiveshell import TerminalInteractiveShell
@@ -26,7 +28,15 @@ class RemoteIPythonDebugger(TerminalPdb):
     Because we need to provide the stdin and stdout params to the __init__, and they require a connection to the client,
     """
     _DEBUGGING_GLOBAL = 'DEBUGGING_WITH_MADBG'
-    # TODO: should this be a per-thread singleton? Because sys.settrace is singletonic
+    _CURRENT_INSTANCE = None
+
+    @classmethod
+    def _get_current_instance(cls) -> Optional[RemoteIPythonDebugger]:
+        return cls._CURRENT_INSTANCE
+
+    @classmethod
+    def _set_current_instance(cls, new: Optional[RemoteIPythonDebugger]) -> None:
+        cls._CURRENT_INSTANCE = new
 
     def __init__(self, stdin, stdout, term_type):
         # A patch until https://github.com/ipython/ipython/issues/11745 is solved
@@ -54,8 +64,10 @@ class RemoteIPythonDebugger(TerminalPdb):
         except BdbQuit:
             bdb_quit = True
         finally:
-            if (done_callback is not None) and (self.quitting or bdb_quit):
-                done_callback()
+            if self.quitting or bdb_quit:
+                # To debugger finalization
+                if done_callback is not None:
+                    done_callback()
 
     def set_trace(self, frame=None, done_callback=None):
         """ Overriding super to add the done_callback argument, allowing cleanup after a debug session """
@@ -96,7 +108,7 @@ class RemoteIPythonDebugger(TerminalPdb):
                     runpy.run_path(python_file, run_name=run_name, init_globals=globals)
 
     @contextmanager
-    def debug(self, check_debugging_global=False):
+    def debug(self, check_debugging_global=False) -> ContextManager:
         self.reset()
         sys.settrace(lambda *args: self.trace_dispatch(*args, check_debugging_global=check_debugging_global))
         try:
@@ -109,7 +121,9 @@ class RemoteIPythonDebugger(TerminalPdb):
 
     @classmethod
     @contextmanager
-    def start(cls, sock_fd):
+    def start(cls, sock_fd: int) -> ContextManager[RemoteIPythonDebugger]:
+        # TODO: just add to pipe list
+        assert cls._get_current_instance() is None
         term_data = receive_message(sock_fd)
         term_attrs, term_type, term_size = term_data['term_attrs'], term_data['term_type'], term_data['term_size']
         with PTY.open() as pty:
@@ -121,18 +135,21 @@ class RemoteIPythonDebugger(TerminalPdb):
                 slave_reader = os.fdopen(pty.slave_fd, 'r')
                 slave_writer = os.fdopen(pty.slave_fd, 'w')
                 try:
-                    yield cls(slave_reader, slave_writer, term_type)
+                    instance = cls(slave_reader, slave_writer, term_type)
+                    cls._set_current_instance(instance)
+                    yield instance
                 except Exception:
                     print(traceback.format_exc(), file=slave_writer)
                     raise
                 finally:
+                    cls._set_current_instance(None)
                     print('Closing connection', file=slave_writer, flush=True)
                     tcdrain(pty.slave_fd)
                     slave_writer.close()
 
     @classmethod
     @contextmanager
-    def get_server_socket(cls, ip: str, port: int) -> socket.socket:
+    def get_server_socket(cls, ip: str, port: int) -> ContextManager[socket.socket]:
         """
         Return a new server socket for client to connect to. The caller is responsible for closing it.
         """
@@ -146,7 +163,7 @@ class RemoteIPythonDebugger(TerminalPdb):
 
     @classmethod
     @contextmanager
-    def start_from_new_connection(cls, sock: socket.socket):
+    def start_from_new_connection(cls, sock: socket.socket) -> ContextManager[RemoteIPythonDebugger]:
         print_to_ctty(f'Debugger client connected from {sock.getpeername()}')
         try:
             with cls.start(sock.fileno()) as debugger:
@@ -155,7 +172,11 @@ class RemoteIPythonDebugger(TerminalPdb):
             sock.close()
 
     @classmethod
-    def connect_and_start(cls, ip, port):
+    def connect_and_start(cls, ip: str, port: int) -> ContextManager[RemoteIPythonDebugger]:
+        # TODO: get rid of context managers at some level - nobody is going to use with start() anyway
+        current_instance = cls._get_current_instance()
+        if current_instance is not None:
+            return nullcontext(current_instance)
         with cls.get_server_socket(ip, port) as server_socket:
             server_socket.listen(1)
             print_to_ctty(f'Waiting for debugger client on {ip}:{port}')
