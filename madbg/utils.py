@@ -4,6 +4,7 @@ import threading
 from collections import defaultdict
 from concurrent.futures.thread import ThreadPoolExecutor
 from contextlib import contextmanager, ExitStack
+from typing import Dict, Any, Set
 
 
 @contextmanager
@@ -44,8 +45,9 @@ def run_thread(func, *args, **kwargs):
             future.result()
 
 
-def opposite_dict(dict_):
+def opposite_dict(dict_: Dict[Any, Set[Any]]) -> Dict[Any, Set[Any]]:
     opposite = defaultdict(set)
-    for key, value in dict_.items():
-        opposite[value].add(key)
+    for key, values in dict_.items():
+        for value in values:
+            opposite[value].add(key)
     return opposite

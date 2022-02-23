@@ -72,5 +72,5 @@ def connect_to_debugger(ip=DEFAULT_IP, port=DEFAULT_PORT, timeout=DEFAULT_CONNEC
         send_message(socket, term_data)
         with prepare_terminal():
             socket_fd = socket.fileno()
-            Piping({in_fd: socket_fd, socket_fd: out_fd}).run()
+            Piping({in_fd: {socket_fd}, socket_fd: {out_fd}}).run()
             tcdrain(out_fd)

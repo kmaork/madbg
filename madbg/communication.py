@@ -6,6 +6,7 @@ from collections import defaultdict
 from functools import partial
 from asyncio import new_event_loop
 from io import BytesIO
+from typing import Dict, Set
 
 from .utils import opposite_dict
 
@@ -30,12 +31,13 @@ def blocking_read(fd, n):
 
 
 class Piping:
-    def __init__(self, pipe_dict):
+    def __init__(self, pipe_dict: Dict[int, Set[int]]):
         self.buffers = defaultdict(bytes)
         self.loop = new_event_loop()
-        for src_fd, dest_fd in pipe_dict.items():
-            self.loop.add_reader(src_fd, partial(self._read, src_fd, dest_fd))
-            self.loop.add_writer(dest_fd, partial(self._write, dest_fd))
+        for src_fd, dest_fds in pipe_dict.items():
+            self.loop.add_reader(src_fd, partial(self._read, src_fd, dest_fds))
+            for dest_fd in dest_fds:
+                self.loop.add_writer(dest_fd, partial(self._write, dest_fd))
         self.readers_to_writers = dict(pipe_dict)
         self.writers_to_readers = opposite_dict(pipe_dict)
 
@@ -47,19 +49,21 @@ class Piping:
     def _remove_reader(self, reader_fd):
         # remove all writers that im the last to write to, remove all that write to me, if nothing left stop loop
         self.loop.remove_reader(reader_fd)
-        writer_fd = self.readers_to_writers.pop(reader_fd)
-        writer_readers = self.writers_to_readers[writer_fd]
-        writer_readers.remove(reader_fd)
-        if not writer_fd:
-            self._remove_writer(writer_fd)
+        writer_fds = self.readers_to_writers.pop(reader_fd)
+        for writer_fd in writer_fds:
+            writer_readers = self.writers_to_readers[writer_fd]
+            writer_readers.remove(reader_fd)
+            if not writer_readers:
+                self._remove_writer(writer_fd)
 
-    def _read(self, src_fd, dest_fd):
+    def _read(self, src_fd, dest_fds):
         try:
             data = os.read(src_fd, 1024)
         except OSError:
             data = ''
         if data:
-            self.buffers[dest_fd] += data
+            for dest_fd in dest_fds:
+                self.buffers[dest_fd] += data
         else:
             self._remove_reader(src_fd)
             if src_fd in self.writers_to_readers:

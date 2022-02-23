@@ -130,7 +130,7 @@ class RemoteIPythonDebugger(TerminalPdb):
             pty.resize(term_size[0], term_size[1])
             pty.set_tty_attrs(term_attrs)
             pty.make_ctty()
-            piping = Piping({sock_fd: pty.master_fd, pty.master_fd: sock_fd})
+            piping = Piping({sock_fd: {pty.master_fd}, pty.master_fd: {sock_fd}})
             with run_thread(piping.run):
                 slave_reader = os.fdopen(pty.slave_fd, 'r')
                 slave_writer = os.fdopen(pty.slave_fd, 'w')
