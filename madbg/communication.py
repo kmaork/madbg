@@ -1,14 +1,14 @@
+from __future__ import annotations
 import pickle
 import fcntl
 import os
 import struct
 from collections import defaultdict
-from functools import partial
+from functools import partial, wraps
 from asyncio import new_event_loop
 from io import BytesIO
-from typing import Dict, Set
-
-from .utils import opposite_dict
+from threading import RLock
+from typing import Dict, Set, Any, Callable
 
 MESSAGE_LENGTH_FMT = 'I'
 
@@ -30,22 +30,47 @@ def blocking_read(fd, n):
     return io.getvalue()
 
 
-class Piping:
+class Locked:
+    def __init__(self):
+        self.lock = RLock()
+
+    @classmethod
+    def thread_safe(cls, method: Callable[[Locked, ...], Any]):
+        @wraps(method)
+        def wrapper(self, *args, **kwargs):
+            with self.lock:
+                return method(self, *args, **kwargs)
+
+        return wrapper
+
+
+class Piping(Locked):
     def __init__(self, pipe_dict: Dict[int, Set[int]]):
+        super().__init__()
         self.buffers = defaultdict(bytes)
         self.loop = new_event_loop()
-        for src_fd, dest_fds in pipe_dict.items():
-            self.loop.add_reader(src_fd, partial(self._read, src_fd, dest_fds))
-            for dest_fd in dest_fds:
-                self.loop.add_writer(dest_fd, partial(self._write, dest_fd))
-        self.readers_to_writers = dict(pipe_dict)
-        self.writers_to_readers = opposite_dict(pipe_dict)
+        self.readers_to_writers = defaultdict(set)
+        self.writers_to_readers = defaultdict(set)
+        for reader_fd, writer_fds in pipe_dict.items():
+            for writer_fd in writer_fds:
+                self.add_pair(reader_fd, writer_fd)
 
+    @Locked.thread_safe
+    def add_pair(self, reader_fd: int, writer_fd: int):
+        if reader_fd not in self.readers_to_writers:
+            self.loop.add_reader(reader_fd, partial(self._read, reader_fd))
+        if writer_fd not in self.writers_to_readers:
+            self.loop.add_writer(writer_fd, partial(self._write, writer_fd))
+        self.readers_to_writers[reader_fd].add(writer_fd)
+        self.writers_to_readers[writer_fd].add(reader_fd)
+
+    @Locked.thread_safe
     def _remove_writer(self, writer_fd):
         self.loop.remove_writer(writer_fd)
         for reader_fd in self.writers_to_readers.pop(writer_fd):
             self.readers_to_writers.pop(reader_fd)
 
+    @Locked.thread_safe
     def _remove_reader(self, reader_fd):
         # remove all writers that im the last to write to, remove all that write to me, if nothing left stop loop
         self.loop.remove_reader(reader_fd)
@@ -56,13 +81,14 @@ class Piping:
             if not writer_readers:
                 self._remove_writer(writer_fd)
 
-    def _read(self, src_fd, dest_fds):
+    @Locked.thread_safe
+    def _read(self, src_fd):
         try:
             data = os.read(src_fd, 1024)
         except OSError:
             data = ''
         if data:
-            for dest_fd in dest_fds:
+            for dest_fd in self.readers_to_writers[src_fd]:
                 self.buffers[dest_fd] += data
         else:
             self._remove_reader(src_fd)
@@ -71,11 +97,13 @@ class Piping:
             if not self.readers_to_writers:
                 self.loop.stop()
 
+    @Locked.thread_safe
     def _write(self, dest_fd):
         buffer = self.buffers[dest_fd]
         if buffer:
             self.buffers[dest_fd] = buffer[os.write(dest_fd, buffer):]
 
+    @Locked.thread_safe
     def run(self):
         self.loop.run_forever()
         # TODO: is this needed?
