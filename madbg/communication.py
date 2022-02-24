@@ -8,9 +8,11 @@ from functools import partial, wraps
 from asyncio import new_event_loop
 from io import BytesIO
 from threading import RLock
-from typing import Dict, Set, Any, Callable
+from typing import Dict, Set, Any, Callable, Optional, Iterable
 
 MESSAGE_LENGTH_FMT = 'I'
+
+PipeDict = Dict[int, Set[int]]
 
 
 def set_nonblocking(fd):
@@ -45,15 +47,14 @@ class Locked:
 
 
 class Piping(Locked):
-    def __init__(self, pipe_dict: Dict[int, Set[int]]):
+    def __init__(self, pipe_dict: Optional[PipeDict] = None):
         super().__init__()
         self.buffers = defaultdict(bytes)
         self.loop = new_event_loop()
         self.readers_to_writers = defaultdict(set)
         self.writers_to_readers = defaultdict(set)
-        for reader_fd, writer_fds in pipe_dict.items():
-            for writer_fd in writer_fds:
-                self.add_pair(reader_fd, writer_fd)
+        if pipe_dict is not None:
+            self.add_pipe(pipe_dict)
 
     @Locked.thread_safe
     def add_pair(self, reader_fd: int, writer_fd: int):
@@ -63,6 +64,12 @@ class Piping(Locked):
             self.loop.add_writer(writer_fd, partial(self._write, writer_fd))
         self.readers_to_writers[reader_fd].add(writer_fd)
         self.writers_to_readers[writer_fd].add(reader_fd)
+
+    @Locked.thread_safe
+    def add_pipe(self, pipe_dict: PipeDict):
+        for reader_fd, writer_fds in pipe_dict.items():
+            for writer_fd in writer_fds:
+                self.add_pair(reader_fd, writer_fd)
 
     @Locked.thread_safe
     def _remove_writer(self, writer_fd):
@@ -110,6 +117,20 @@ class Piping(Locked):
         # for dest_fd, buffer in self.buffers.items():
         #     while buffer:
         #         buffer = buffer[os.write(dest_fd, buffer):]
+
+
+class Session:
+    def __init__(self, master_fd: int, clients: Iterable[int]):
+        self.master_fd = master_fd
+        self.piping = Piping()
+        for client in clients:
+            self.connect_client(client)
+
+    def connect_client(self, fd: int):
+        self.piping.add_pipe({fd: {self.master_fd}, self.master_fd: {fd}})
+
+    def run(self):
+        self.piping.run()
 
 
 def send_message(sock, obj):

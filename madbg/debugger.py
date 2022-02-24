@@ -7,17 +7,16 @@ import traceback
 from bdb import BdbQuit
 from contextlib import contextmanager, nullcontext
 from termios import tcdrain
-from typing import Optional, ContextManager
-
-from IPython.terminal.debugger import TerminalPdb
-from IPython.terminal.interactiveshell import TerminalInteractiveShell
+from typing import Optional, ContextManager, TextIO
 from prompt_toolkit.input.vt100 import Vt100Input
 from prompt_toolkit.output.vt100 import Vt100_Output
 from inspect import currentframe
+from IPython.terminal.debugger import TerminalPdb
+from IPython.terminal.interactiveshell import TerminalInteractiveShell
 
 from .utils import preserve_sys_state, run_thread
 from .tty_utils import print_to_ctty, PTY
-from .communication import receive_message, Piping
+from .communication import receive_message, Session
 
 
 class RemoteIPythonDebugger(TerminalPdb):
@@ -38,7 +37,7 @@ class RemoteIPythonDebugger(TerminalPdb):
     def _set_current_instance(cls, new: Optional[RemoteIPythonDebugger]) -> None:
         cls._CURRENT_INSTANCE = new
 
-    def __init__(self, stdin, stdout, term_type):
+    def __init__(self, stdin: TextIO, stdout: TextIO, term_type: Optional[str]):
         # A patch until https://github.com/ipython/ipython/issues/11745 is solved
         TerminalInteractiveShell.simple_prompt = False
         term_input = Vt100Input(stdin)
@@ -131,8 +130,8 @@ class RemoteIPythonDebugger(TerminalPdb):
             pty.resize(term_size[0], term_size[1])
             pty.set_tty_attrs(term_attrs)
             pty.make_ctty()
-            piping = Piping({sock_fd: {pty.master_fd}, pty.master_fd: {sock_fd}})
-            with run_thread(piping.run):
+            session = Session(pty.master_fd, [sock_fd])
+            with run_thread(session.run):
                 slave_reader = os.fdopen(pty.slave_fd, 'r')
                 slave_writer = os.fdopen(pty.slave_fd, 'w')
                 try:
