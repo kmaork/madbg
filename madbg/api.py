@@ -68,7 +68,7 @@ def set_trace_on_connect(ip=DEFAULT_IP, port=DEFAULT_PORT):
     server_fd = server_socket.fileno()
     fcntl(server_fd, F_SETOWN, getpid())
     fcntl(server_fd, F_SETFL, fcntl(server_fd, F_GETFL, 0) | O_ASYNC)
-    server_socket.listen(1)
+    server_socket.listen(5)
     print_to_ctty(f'Listening for debugger client on {ip}:{port}')
 
 

@@ -20,12 +20,6 @@ from .communication import receive_message, Session
 
 
 class RemoteIPythonDebugger(TerminalPdb):
-    """
-    Initializes IPython's TerminalPdb with stdio from a pty.
-    As TerminalPdb uses prompt_toolkit instead of the builtin input(),
-    we can use it to allow line editing and tab completion for files other than stdio (in this case, the pty).
-    Because we need to provide the stdin and stdout params to the __init__, and they require a connection to the client,
-    """
     _DEBUGGING_GLOBAL = 'DEBUGGING_WITH_MADBG'
     _CURRENT_INSTANCE = None
 

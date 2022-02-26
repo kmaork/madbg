@@ -121,6 +121,9 @@ class Piping(Locked):
 
 class Session:
     def __init__(self, master_fd: int, clients: Iterable[int]):
+        # TODO: is the correct thing to do is to have multiple PTYs? Then each client could have its
+        #       own terminal size and type... This doesn't go hand in hand with the current IPythonDebugger
+        #       design, as it assumes it is singletonic, and it has one output PTY.
         self.master_fd = master_fd
         self.piping = Piping()
         for client in clients:
