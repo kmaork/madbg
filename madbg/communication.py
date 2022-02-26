@@ -1,35 +1,17 @@
 from __future__ import annotations
 import pickle
-import fcntl
 import os
 import struct
 from collections import defaultdict
 from functools import partial, wraps
 from asyncio import new_event_loop
-from io import BytesIO
 from threading import RLock
-from typing import Dict, Set, Any, Callable, Optional, Iterable
+from typing import Dict, Set, Any, Callable, Optional
 
 MESSAGE_LENGTH_FMT = 'I'
+MESSAGE_LENGTH_LENGTH = struct.calcsize(MESSAGE_LENGTH_FMT)
 
 PipeDict = Dict[int, Set[int]]
-
-
-def set_nonblocking(fd):
-    flags = fcntl.fcntl(fd, fcntl.F_GETFL)
-    fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
-
-
-def blocking_read(fd, n):
-    io = BytesIO()
-    read_amount = 0
-    while read_amount < n:
-        data = os.read(fd, n - read_amount)
-        if not data:
-            raise IOError('FD closed before all bytes read')
-        read_amount += len(data)
-        io.write(data)
-    return io.getvalue()
 
 
 class Locked:
@@ -119,33 +101,9 @@ class Piping(Locked):
         #         buffer = buffer[os.write(dest_fd, buffer):]
 
 
-class Session:
-    def __init__(self, master_fd: int, clients: Iterable[int]):
-        # TODO: is the correct thing to do is to have multiple PTYs? Then each client could have its
-        #       own terminal size and type... This doesn't go hand in hand with the current IPythonDebugger
-        #       design, as it assumes it is singletonic, and it has one output PTY.
-        self.master_fd = master_fd
-        self.piping = Piping()
-        for client in clients:
-            self.connect_client(client)
-
-    def connect_client(self, fd: int):
-        self.piping.add_pipe({fd: {self.master_fd}, self.master_fd: {fd}})
-
-    def run(self):
-        self.piping.run()
-
-
 def send_message(sock, obj):
+    # TODO: stop using pickle FGS
     message = pickle.dumps(obj)
     message_len = struct.pack(MESSAGE_LENGTH_FMT, len(message))
     sock.sendall(message_len)
     sock.sendall(message)
-
-
-def receive_message(sock):
-    len_len = struct.calcsize(MESSAGE_LENGTH_FMT)
-    len_bytes = blocking_read(sock, len_len)
-    message_len = struct.unpack(MESSAGE_LENGTH_FMT, len_bytes)[0]
-    message = blocking_read(sock, message_len)
-    return pickle.loads(message)

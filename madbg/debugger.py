@@ -1,45 +1,48 @@
 from __future__ import annotations
 import runpy
 import os
-import socket
 import sys
-import traceback
 from bdb import BdbQuit
 from contextlib import contextmanager, nullcontext
-from termios import tcdrain
-from typing import Optional, ContextManager, TextIO
+from typing import ContextManager
 from prompt_toolkit.input.vt100 import Vt100Input
 from prompt_toolkit.output.vt100 import Vt100_Output
 from inspect import currentframe
 from IPython.terminal.debugger import TerminalPdb
 from IPython.terminal.interactiveshell import TerminalInteractiveShell
 
-from .utils import preserve_sys_state, run_thread
-from .tty_utils import print_to_ctty, PTY
-from .communication import receive_message, Session
+from .utils import preserve_sys_state, Singleton
+from .tty_utils import PTY, TTYConfig
 
 
-class RemoteIPythonDebugger(TerminalPdb):
+class RemoteIPythonDebugger(TerminalPdb, metaclass=Singleton):
     _DEBUGGING_GLOBAL = 'DEBUGGING_WITH_MADBG'
-    _CURRENT_INSTANCE = None
 
-    @classmethod
-    def _get_current_instance(cls) -> Optional[RemoteIPythonDebugger]:
-        return cls._CURRENT_INSTANCE
-
-    @classmethod
-    def _set_current_instance(cls, new: Optional[RemoteIPythonDebugger]) -> None:
-        cls._CURRENT_INSTANCE = new
-
-    def __init__(self, stdin: TextIO, stdout: TextIO, term_type: Optional[str]):
+    def __init__(self):
+        self.pty = PTY.open()
+        self.pty.make_ctty()
         # A patch until https://github.com/ipython/ipython/issues/11745 is solved
         TerminalInteractiveShell.simple_prompt = False
-        term_input = Vt100Input(stdin)
-        term_output = Vt100_Output.from_pty(stdout, term_type)
-        super().__init__(pt_session_options=dict(input=term_input, output=term_output), stdin=stdin, stdout=stdout)
+        self.term_input = Vt100Input(self.pty.slave_reader)
+        self.term_output = Vt100_Output.from_pty(self.pty.slave_writer)
+        super().__init__(pt_session_options=dict(input=self.term_input, output=self.term_output),
+                         stdin=self.pty.slave_reader, stdout=self.pty.slave_writer)
         self.use_rawinput = True
-        self.session = session
+        self.num_clients = 0
         self.done_callback = None
+
+    def __del__(self):
+        print('Closing connection', file=self.pty.slave_writer, flush=True)
+        self.pty.close()
+
+    def notify_client_connect(self, tty_config: TTYConfig):
+        self.num_clients += 1
+        tty_config.apply(self.pty.slave_fd)
+        self.term_output.term = tty_config.term_type
+
+    def notify_client_disconnect(self):
+        self.num_clients -= 1
+        # TODO: warn if still in trace and last client disconnected
 
     def trace_dispatch(self, frame, event, arg, check_debugging_global=False):
         """
@@ -113,73 +116,3 @@ class RemoteIPythonDebugger(TerminalPdb):
         finally:
             self.quitting = True
             sys.settrace(None)
-
-    @classmethod
-    @contextmanager
-    def start(cls, sock_fd: int) -> ContextManager[RemoteIPythonDebugger]:
-        current_instance = cls._get_current_instance()
-        if current_instance is not None:
-            # TODO: test this
-            current_instance.session.connect_client(sock_fd)
-            # TODO: we want to make sure that things aren't destroyed when the first client disconnects,
-            #       and are destroyed when the last client disconnects
-            yield current_instance
-            return
-        term_data = receive_message(sock_fd)
-        term_attrs, term_type, term_size = term_data['term_attrs'], term_data['term_type'], term_data['term_size']
-        with PTY.open() as pty:
-            pty.resize(term_size[0], term_size[1])
-            pty.set_tty_attrs(term_attrs)
-            pty.make_ctty()
-            session = Session(pty.master_fd, [sock_fd])
-            with run_thread(session.run):
-                slave_reader = os.fdopen(pty.slave_fd, 'r')
-                slave_writer = os.fdopen(pty.slave_fd, 'w')
-                try:
-                    instance = cls(slave_reader, slave_writer, term_type)
-                    cls._set_current_instance(instance)
-                    yield instance
-                except Exception:
-                    print(traceback.format_exc(), file=slave_writer)
-                    raise
-                finally:
-                    cls._set_current_instance(None)
-                    print('Closing connection', file=slave_writer, flush=True)
-                    tcdrain(pty.slave_fd)
-                    slave_writer.close()
-
-    @classmethod
-    @contextmanager
-    def get_server_socket(cls, ip: str, port: int) -> ContextManager[socket.socket]:
-        """
-        Return a new server socket for client to connect to. The caller is responsible for closing it.
-        """
-        server_socket = socket.socket()
-        server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, True)
-        server_socket.bind((ip, port))
-        try:
-            yield server_socket
-        finally:
-            server_socket.close()
-
-    @classmethod
-    @contextmanager
-    def start_from_new_connection(cls, sock: socket.socket) -> ContextManager[RemoteIPythonDebugger]:
-        print_to_ctty(f'Debugger client connected from {sock.getpeername()}')
-        try:
-            with cls.start(sock.fileno()) as debugger:
-                yield debugger
-        finally:
-            sock.close()
-
-    @classmethod
-    def connect_and_start(cls, ip: str, port: int) -> ContextManager[RemoteIPythonDebugger]:
-        # TODO: get rid of context managers at some level - nobody is going to use with start() anyway
-        current_instance = cls._get_current_instance()
-        if current_instance is not None:
-            return nullcontext(current_instance)
-        with cls.get_server_socket(ip, port) as server_socket:
-            server_socket.listen(1)
-            print_to_ctty(f'Waiting for debugger client on {ip}:{port}')
-            sock, _ = server_socket.accept()
-        return cls.start_from_new_connection(sock)

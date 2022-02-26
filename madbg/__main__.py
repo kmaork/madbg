@@ -8,7 +8,8 @@ from madbg import run_with_debugging, attach_to_process
 port_argument = argument('port', type=int, default=DEFAULT_PORT)
 connect_timeout_option = option('-t', '--timeout', type=float, default=DEFAULT_CONNECT_TIMEOUT, show_default=True,
                                 help='Connection timeout in seconds')
-
+# TODO: allow addr instead of ip, port. Addr can be either a unix socket, ip:port, port, etc.
+# TODO: add madbg child command, that adds a sitecustomize to the pythonpath that starts madbg
 
 @group(context_settings=dict(help_option_names=['-h', '--help']))
 def cli():

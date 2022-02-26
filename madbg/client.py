@@ -9,9 +9,11 @@ from contextlib import contextmanager
 
 from .communication import Piping, send_message
 from .consts import DEFAULT_IP, DEFAULT_PORT, STDIN_FILENO, STDOUT_FILENO, DEFAULT_CONNECT_TIMEOUT
+from .tty_utils import TTYConfig
 
 
 def get_tty_handle():
+    # TODO: shouldn't this actually be stdout?
     return os.open(os.ctermid(), os.O_RDWR)
 
 
@@ -64,12 +66,7 @@ def connect_to_debugger(ip=DEFAULT_IP, port=DEFAULT_PORT, timeout=DEFAULT_CONNEC
                         in_fd=STDIN_FILENO, out_fd=STDOUT_FILENO):
     with connect_to_server(ip, port, timeout) as socket:
         tty_handle = get_tty_handle()
-        term_size = os.get_terminal_size(tty_handle)
-        term_data = dict(term_attrs=tcgetattr(tty_handle),
-                         # prompt toolkit will receive this string, and it can be 'unknown'
-                         term_type=os.environ.get("TERM", "unknown"),
-                         term_size=(term_size.lines, term_size.columns))
-        send_message(socket, term_data)
+        send_message(socket, TTYConfig.get(tty_handle))
         with prepare_terminal():
             socket_fd = socket.fileno()
             Piping({in_fd: {socket_fd}, socket_fd: {out_fd}}).run()
