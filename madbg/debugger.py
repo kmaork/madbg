@@ -38,6 +38,7 @@ class RemoteIPythonDebugger(TerminalPdb):
         term_output = Vt100_Output.from_pty(stdout, term_type)
         super().__init__(pt_session_options=dict(input=term_input, output=term_output), stdin=stdin, stdout=stdout)
         self.use_rawinput = True
+        self.session = session
         self.done_callback = None
 
     def trace_dispatch(self, frame, event, arg, check_debugging_global=False):
@@ -116,8 +117,14 @@ class RemoteIPythonDebugger(TerminalPdb):
     @classmethod
     @contextmanager
     def start(cls, sock_fd: int) -> ContextManager[RemoteIPythonDebugger]:
-        # TODO: just add to pipe list
-        assert cls._get_current_instance() is None
+        current_instance = cls._get_current_instance()
+        if current_instance is not None:
+            # TODO: test this
+            current_instance.session.connect_client(sock_fd)
+            # TODO: we want to make sure that things aren't destroyed when the first client disconnects,
+            #       and are destroyed when the last client disconnects
+            yield current_instance
+            return
         term_data = receive_message(sock_fd)
         term_attrs, term_type, term_size = term_data['term_attrs'], term_data['term_type'], term_data['term_size']
         with PTY.open() as pty:
