@@ -12,8 +12,8 @@ def preserve_sys_state():
     try:
         yield
     finally:
-        sys.argv = sys_argv
-        sys.path = sys_path
+        sys.argv[:] = sys_argv
+        sys.path[:] = sys_path
 
 
 def register_atexit(callback, *args, **kwargs):
@@ -41,3 +41,18 @@ def run_thread(func, *args, **kwargs):
             yield future
         finally:
             future.result()
+
+
+class Singleton(type):
+    def __init__(cls, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        cls._INSTANCE = None
+        cls._INSTANCE_LOCK = threading.RLock()
+
+    def __call__(cls):
+        with cls._INSTANCE_LOCK:
+            if cls._INSTANCE is not None:
+                return cls._INSTANCE
+            instance = super().__call__()
+            cls._INSTANCE = instance
+        return instance
