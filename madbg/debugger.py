@@ -12,7 +12,7 @@ from IPython.terminal.debugger import TerminalPdb
 from IPython.terminal.interactiveshell import TerminalInteractiveShell
 
 from .utils import preserve_sys_state, Singleton
-from .tty_utils import PTY, TTYConfig
+from .tty_utils import PTY, TTYConfig, print_to_ctty
 
 
 class RemoteIPythonDebugger(TerminalPdb, metaclass=Singleton):
@@ -20,7 +20,6 @@ class RemoteIPythonDebugger(TerminalPdb, metaclass=Singleton):
 
     def __init__(self):
         self.pty = PTY.open()
-        self.pty.make_ctty()
         # A patch until https://github.com/ipython/ipython/issues/11745 is solved
         TerminalInteractiveShell.simple_prompt = False
         self.term_input = Vt100Input(self.pty.slave_reader)
@@ -43,6 +42,10 @@ class RemoteIPythonDebugger(TerminalPdb, metaclass=Singleton):
     def notify_client_disconnect(self):
         self.num_clients -= 1
         # TODO: warn if still in trace and last client disconnected
+
+    def preloop(self):
+        if self.num_clients == 0:
+            print_to_ctty("Waiting for client to connect")
 
     def trace_dispatch(self, frame, event, arg, check_debugging_global=False):
         """

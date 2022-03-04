@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import errno
 import os
 import pty
@@ -6,33 +7,10 @@ import struct
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import cached_property
-from multiprocessing.pool import Pool
 import signal
 import fcntl
-from typing import Optional, Tuple
-
 import termios
-
-
-def is_session_leader():
-    return os.getsid(0) == os.getpid()
-
-
-def set_group_leader():
-    os.setpgid(0, 0)
-    return os.getpgid(0)
-
-
-def make_sure_not_group_leader():
-    if os.getpgid(0) == os.getpid():
-        with Pool(1) as pool:
-            pgid = pool.apply(set_group_leader)
-            os.setpgid(0, pgid)
-
-
-def make_session_leader():
-    make_sure_not_group_leader()
-    os.setsid()
+from typing import Tuple
 
 
 @contextmanager
@@ -42,50 +20,6 @@ def set_handler(sig, handler):
         yield old
     finally:
         signal.signal(sig, old)
-
-
-def ignore_signal(sig):
-    return set_handler(sig, signal.SIG_IGN)
-
-
-def detach_ctty(ctty_fd):
-    # TODO: will children receive sighup as well?
-    # When a process detaches from a tty, it is sent the signals SIGHUP and then SIGCONT
-    with ignore_signal(signal.SIGHUP):
-        fcntl.ioctl(ctty_fd, termios.TIOCNOTTY)
-
-
-def attach_ctty(fd: int) -> bool:
-    try:
-        fcntl.ioctl(fd, termios.TIOCSCTTY, 1)
-        return True
-    except PermissionError:
-        return False
-
-
-def get_ctty_fd() -> Optional[int]:
-    """
-    If there is a controlling tty for this process, return a read+write fd to it.
-    Otherwise return None.
-    """
-    try:
-        return os.open(os.ctermid(), os.O_RDWR)
-    except OSError as e:
-        if e.errno == errno.ENXIO:
-            return None
-        raise
-
-
-def detach_current_ctty():
-    """ Detach from ctty if there is one """
-    ctty_fd = get_ctty_fd()
-    # If there is no ctty, ctty_fd is None and we don't do anything
-    if ctty_fd is not None:
-        if is_session_leader():
-            detach_ctty(ctty_fd)
-        else:
-            make_session_leader()
-        os.close(ctty_fd)
 
 
 @dataclass
@@ -137,13 +71,8 @@ class PTY:
     def close(self):
         if not self._closed:
             termios.tcdrain(self.slave_fd)
-            with ignore_signal(signal.SIGHUP):
-                os.close(self.master_fd)
+            os.close(self.master_fd)
             self._closed = True
-
-    def make_ctty(self) -> bool:
-        detach_current_ctty()
-        return attach_ctty(self.slave_fd)
 
     @classmethod
     def open(cls) -> PTY:
@@ -151,8 +80,11 @@ class PTY:
         return cls(master_fd, slave_fd)
 
 
-def print_to_ctty(string):
+def print_to_ctty(*args):
     """ If there is a ctty, print the given string to it. """
-    ctty_fd = get_ctty_fd()
-    if ctty_fd is not None:
-        print(string, file=os.fdopen(ctty_fd, 'w'))
+    try:
+        with open(os.ctermid(), 'w') as tty:
+            print(*args, file=tty)
+    except OSError as e:
+        if e.errno != errno.ENXIO:
+            raise

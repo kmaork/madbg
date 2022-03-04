@@ -1,8 +1,8 @@
-import atexit
 import sys
 import threading
-from concurrent.futures.thread import ThreadPoolExecutor
-from contextlib import contextmanager, ExitStack
+from contextlib import contextmanager
+from dataclasses import dataclass
+from typing import Any
 
 
 @contextmanager
@@ -14,33 +14,6 @@ def preserve_sys_state():
     finally:
         sys.argv[:] = sys_argv
         sys.path[:] = sys_path
-
-
-def register_atexit(callback, *args, **kwargs):
-    if sys.version_info >= (3, 9):
-        # Since python3.9, ThreadPoolExecutor threads are non-daemon, which means they are joined before atexit
-        # hooks run - https://bugs.python.org/issue39812
-        threading._register_atexit(callback, *args, **kwargs)
-    else:
-        atexit.register(callback, *args, **kwargs)
-
-
-def use_context(context_manager, exit_stack=None):
-    if exit_stack is None:
-        exit_stack = ExitStack()
-        register_atexit(exit_stack.close)
-    context_value = exit_stack.enter_context(context_manager)
-    return context_value, exit_stack
-
-
-@contextmanager
-def run_thread(func, *args, **kwargs):
-    with ThreadPoolExecutor(1) as executor:
-        future = executor.submit(func, *args, **kwargs)
-        try:
-            yield future
-        finally:
-            future.result()
 
 
 class Singleton(type):
@@ -56,3 +29,33 @@ class Singleton(type):
             instance = super().__call__()
             cls._INSTANCE = instance
         return instance
+
+
+class Handlers:
+    def __init__(self):
+        self.keys_to_funcs = {}
+
+    def register(self, key):
+        def decorator(func):
+            self.keys_to_funcs[key] = func
+            return func
+
+        return decorator
+
+    def __get__(self, instance, owner):
+        if instance is None:
+            return self
+        return BoundHandlers(self, instance, owner)
+
+
+@dataclass
+class BoundHandlers:
+    handlers: Handlers
+    instance: Any
+    owner: Any
+
+    def __call__(self, key):
+        self.handlers.keys_to_funcs[key](self.instance, key)
+
+    def __iter__(self):
+        return ((key, func.__get__(self.instance, self.owner)) for key, func in self.handlers.keys_to_funcs.items())

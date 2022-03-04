@@ -1,14 +1,16 @@
 import os
+import pickle
 import socket
+import struct
 import time
 import atexit
 from functools import partial
 from tty import setraw
-from termios import tcdrain, tcgetattr, tcsetattr, TCSANOW
+from termios import tcgetattr, tcsetattr, TCSANOW
 from contextlib import contextmanager
 
-from .communication import Piping, send_message
-from .consts import DEFAULT_IP, DEFAULT_PORT, STDIN_FILENO, STDOUT_FILENO, DEFAULT_CONNECT_TIMEOUT
+from .communication import Piping
+from .consts import DEFAULT_ADDR, STDIN_FILENO, STDOUT_FILENO, DEFAULT_CONNECT_TIMEOUT, MESSAGE_LENGTH_FMT
 from .tty_utils import TTYConfig
 
 
@@ -62,12 +64,16 @@ def connect_to_server(ip, port, timeout):
         s.close()
 
 
-def connect_to_debugger(ip=DEFAULT_IP, port=DEFAULT_PORT, timeout=DEFAULT_CONNECT_TIMEOUT,
+def connect_to_debugger(addr=DEFAULT_ADDR, timeout=DEFAULT_CONNECT_TIMEOUT,
                         in_fd=STDIN_FILENO, out_fd=STDOUT_FILENO):
-    with connect_to_server(ip, port, timeout) as socket:
+    # TODO: use asyncio, and parse addr correctly
+    with connect_to_server(*addr, timeout) as socket:
         tty_handle = get_tty_handle()
-        send_message(socket, TTYConfig.get(tty_handle))
+        message = pickle.dumps(TTYConfig.get(tty_handle))
+        message_len = struct.pack(MESSAGE_LENGTH_FMT, len(message))
+        socket.sendall(message_len)
+        socket.sendall(message)
+
         with prepare_terminal():
             socket_fd = socket.fileno()
             Piping({in_fd: {socket_fd}, socket_fd: {out_fd}}).run()
-            tcdrain(out_fd)

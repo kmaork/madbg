@@ -53,7 +53,7 @@ madbg.set_trace()
 ```
 Continue running the program until a client connects, then stop it and start a debugger:
 ```python
-madbg.set_trace_on_connect()
+madbg.start()
 ```
 After an exception has occurred, or in an exception context, start a debugger in the frame the exception was raised from:
 ```python
