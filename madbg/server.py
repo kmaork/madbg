@@ -9,15 +9,15 @@ from concurrent.futures import Future
 from threading import RLock, Thread
 from typing import Any
 
-from .inject_into_thread import inject_into_thread
+from .inject_into_main_thread import prepare_injection, inject
 from .consts import DEFAULT_ADDR, Addr
 from .debugger import RemoteIPythonDebugger
 from .tty_utils import print_to_ctty
 from .communication import MESSAGE_LENGTH_FMT, MESSAGE_LENGTH_LENGTH
 from .utils import Handlers
 
-CTRL_C = 3
-CTRL_D = 4
+CTRL_C = bytes([3])
+CTRL_D = bytes([4])
 
 
 # TODO: is the correct thing to do is to have multiple PTYs? Then each client could have its
@@ -69,9 +69,15 @@ class DebuggerServer:
         self.master_writer_stream = master_writer_stream
         self.client_multicast = client_multicast
 
-    @KEY_HANDLERS.register(CTRL_C)
-    def ctrl_c_handler(self, _key):
-        os.kill(0, signal.SIGINT)
+    # @KEY_HANDLERS.register(CTRL_C)
+    # def ctrl_c_handler(self, _key):
+    #     # TODO: only if our app is active
+    #     # TODO: block ctrl-\
+    #     os.kill(0, signal.SIGINT)
+
+    # @KEY_HANDLERS.register(bytes([28]))
+    # def ctrl_pipe_handler(self, _key):
+    #     print('yououo')
 
     def _handle_keys(self, data: bytes) -> bytes:
         for key, handler in self.KEY_HANDLERS:
@@ -81,7 +87,6 @@ class DebuggerServer:
         return data
 
     async def _client_connected(self, reader: StreamReader, writer: StreamWriter):
-        print_to_ctty('Hellooooooo')
         self.client_multicast.add_client(writer)
         peer = writer.get_extra_info('peername')
         print_to_ctty(f'Debugger client connected from {peer}')
@@ -90,18 +95,20 @@ class DebuggerServer:
         # TODO: make thread safe
         self.debugger.notify_client_connect(config)
         # TODO: only if not tracing already
-        inject_into_thread(threading.main_thread(), self.debugger.set_trace)
+        inject()
         while not reader.at_eof():
             data = self._handle_keys(await reader.read(self.CHUNK_SIZE))
             self.master_writer_stream.write(data)
-            await self.master_writer_stream.drain()
+            # await self.master_writer_stream.drain()
         self.debugger.notify_client_disconnect()
+        # TODO: close writer/reader when done?
 
     async def _serve(self, addr: Any):
         assert isinstance(addr, tuple) and isinstance(addr[0], str) and isinstance(addr[1], int)
         ip, port = addr
         print_to_ctty(f'Listening for debugger clients on {ip}:{port}')
-        await start_server(self._client_connected, ip, port)
+        server = await start_server(self._client_connected, ip, port)
+        await server.serve_forever()
 
     @classmethod
     async def _async_run(cls, addr: Any, debugger: RemoteIPythonDebugger):
@@ -110,7 +117,7 @@ class DebuggerServer:
         master_writer = os.fdopen(debugger.pty.master_fd, 'wb')
         client_multicast = ClientMulticastProtocol(loop)
         await loop.connect_read_pipe(lambda: client_multicast, master_reader)
-        write_transport, write_protocol = await  loop.connect_write_pipe(Protocol, master_writer)
+        write_transport, write_protocol = await loop.connect_write_pipe(Protocol, master_writer)
         master_writer_stream = StreamWriter(write_transport, write_protocol, None, loop)
         self = cls(debugger, master_writer_stream, client_multicast)
         try:
@@ -131,6 +138,7 @@ class DebuggerServer:
             if state is None:
                 # TODO: receive addr as arg
                 cls.STATE.set(Future())
+                prepare_injection()
                 Thread(daemon=True, target=cls._run, args=(DEFAULT_ADDR, RemoteIPythonDebugger())).start()
             elif state.done():
                 # Raise the exception

@@ -26,7 +26,7 @@ def inject_into_thread(thread: threading.Thread, payload: Callable[[FrameType], 
     """
     This is not safe. Our handler almost surely has non-reentrant code, which means if the
     target thread is in userspace when the signal is delivered, we might reenter forbidden
-    code and crash something or deadlock. This is not extremely likely to happen as the calling thread holds
+    code and crash something or deadlock. This is not extremely likely to happen, as the calling thread holds
     the GIL, but of course we need to find a completely safe solution.
     An alternative is to do the same as pydev.debugger did, as mentioned here: https://bugs.python.org/issue35370 -
     either by:
@@ -41,5 +41,6 @@ def inject_into_thread(thread: threading.Thread, payload: Callable[[FrameType], 
     if thread is threading.currentThread():
         payload(inspect.currentframe().f_back)
     else:
+        # We can't really treat the main thread differently, as we can't set a signal handler from a non-main thread
         set_temp_handler(SIGNAL, payload)
         signal.pthread_kill(thread.ident, SIGNAL)

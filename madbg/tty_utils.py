@@ -59,12 +59,12 @@ class PTY:
     slave_fd: int
     _closed: bool = False
 
-    @cached_property
+    @property
     def slave_reader(self):
         # TODO: pass closefd?
         return os.fdopen(self.slave_fd, 'r')
 
-    @cached_property
+    @property
     def slave_writer(self):
         return os.fdopen(self.slave_fd, 'w')
 

@@ -2,14 +2,11 @@ import os
 import re
 import signal
 import sys
-from select import select
 from traceback import format_exc
 from contextlib import nullcontext
 from inspect import currentframe
 from pdb import Restart
 from hypno import inject_py
-from fcntl import fcntl, F_GETFL, F_SETFL, F_SETOWN
-from os import O_ASYNC, getpid
 
 from .server import DebuggerServer
 from .client import connect_to_debugger
