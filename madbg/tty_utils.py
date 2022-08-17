@@ -53,8 +53,12 @@ def detach_ctty(ctty_fd):
         fcntl.ioctl(ctty_fd, termios.TIOCNOTTY)
 
 
-def attach_ctty(fd):
-    fcntl.ioctl(fd, termios.TIOCSCTTY, 1)
+def attach_ctty(fd: int) -> bool:
+    try:
+        fcntl.ioctl(fd, termios.TIOCSCTTY, 1)
+        return True
+    except PermissionError:
+        return False
 
 
 def get_ctty_fd() -> Optional[int]:
@@ -112,9 +116,9 @@ class PTY:
         tc_attrs[CC] = current_attrs[termios.CC]
         termios.tcsetattr(self.slave_fd, when, tc_attrs)
 
-    def make_ctty(self):
+    def make_ctty(self) -> bool:
         detach_current_ctty()
-        attach_ctty(self.slave_fd)
+        return attach_ctty(self.slave_fd)
 
     @classmethod
     @contextmanager
