@@ -45,8 +45,9 @@ class RemoteIPythonDebugger(TerminalPdb):
         term_output = Vt100_Output.from_pty(stdout, term_type)
         super().__init__(pt_session_options=dict(input=term_input, output=term_output), stdin=stdin, stdout=stdout)
         self.use_rawinput = True
+        self.done_callback = None
 
-    def trace_dispatch(self, frame, event, arg, check_debugging_global=False, done_callback=None):
+    def trace_dispatch(self, frame, event, arg, check_debugging_global=False):
         """
         Overriding super to allow the check_debugging_global and done_callback args.
 
@@ -55,9 +56,9 @@ class RemoteIPythonDebugger(TerminalPdb):
         """
         if check_debugging_global:
             if self._DEBUGGING_GLOBAL in frame.f_globals:
-                self.set_trace(frame, done_callback=done_callback)
+                self.set_trace(frame)
             else:
-                return
+                return None
         bdb_quit = False
         try:
             return super().trace_dispatch(frame, event, arg)
@@ -65,22 +66,22 @@ class RemoteIPythonDebugger(TerminalPdb):
             bdb_quit = True
         finally:
             if self.quitting or bdb_quit:
-                # To debugger finalization
-                if done_callback is not None:
-                    done_callback()
+                self._on_done()
+
+    def _on_done(self):
+        if self.done_callback is not None:
+            self.done_callback()
+            self.done_callback = None
 
     def set_trace(self, frame=None, done_callback=None):
         """ Overriding super to add the done_callback argument, allowing cleanup after a debug session """
-        td = lambda *args: self.trace_dispatch(*args, done_callback=done_callback)
+        if done_callback is not None:
+            # set_trace was called again without the previous one exiting -
+            # happens on continue -> ctrl-c
+            self.done_callback = done_callback
         if frame is None:
             frame = currentframe().f_back
-        self.reset()
-        while frame:
-            frame.f_trace = td
-            self.botframe = frame
-            frame = frame.f_back
-        self.set_step()
-        sys.settrace(td)
+        return super().set_trace(frame)
 
     def do_continue(self, arg):
         """ Overriding super to add a print """
