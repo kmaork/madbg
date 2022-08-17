@@ -16,9 +16,10 @@ from .tty_utils import print_to_ctty
 from .communication import MESSAGE_LENGTH_FMT, MESSAGE_LENGTH_LENGTH
 from .utils import Handlers
 
-CTRL_C = bytes([3])
 CTRL_D = bytes([4])
-
+CTRL_Z = ...
+CTRL_BACKSLASH = bytes([28])
+CTRL_Q = ...
 
 # TODO: is the correct thing to do is to have multiple PTYs? Then each client could have its
 #       own terminal size and type... This doesn't go hand in hand with the current IPythonDebugger
@@ -69,15 +70,10 @@ class DebuggerServer:
         self.master_writer_stream = master_writer_stream
         self.client_multicast = client_multicast
 
-    # @KEY_HANDLERS.register(CTRL_C)
-    # def ctrl_c_handler(self, _key):
-    #     # TODO: only if our app is active
-    #     # TODO: block ctrl-\
-    #     os.kill(0, signal.SIGINT)
 
-    # @KEY_HANDLERS.register(bytes([28]))
-    # def ctrl_pipe_handler(self, _key):
-    #     print('yououo')
+    @KEY_HANDLERS.register(CTRL_BACKSLASH)
+    def ctrl_pipe_handler(self, _key):
+        print('yououo')
 
     def _handle_keys(self, data: bytes) -> bytes:
         for key, handler in self.KEY_HANDLERS:

@@ -29,6 +29,7 @@ class RemoteIPythonDebugger(TerminalPdb, metaclass=Singleton):
         self.use_rawinput = True
         self.num_clients = 0
         self.done_callback = None
+        self.pt_app.key_bindings.remove("c-\\")
 
     def __del__(self):
         print('Closing connection', file=self.pty.slave_writer, flush=True)

@@ -30,6 +30,8 @@ def _inject_set_trace(pid: int, addr: Addr = DEFAULT_ADDR):
 
 
 # TODO: DEFAULT_PORT
+# TODO: debugging global should be handled the same way as done_callback
+# TODO: add test that would have caught the done callback bug
 def attach_to_process(pid: int, port=DEFAULT_ADDR[1], connect_timeout=DEFAULT_CONNECT_TIMEOUT):
     addr = ('127.0.0.1', port)
     _inject_set_trace(pid, addr)
