@@ -5,6 +5,7 @@ on:
   release:
     types: [created]
   push:
+  pull_request:
 
 jobs:
   test:
