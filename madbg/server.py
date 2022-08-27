@@ -1,25 +1,21 @@
 import os
 import pickle
-import signal
 import struct
-import threading
 from asyncio import Protocol, StreamReader, StreamWriter, AbstractEventLoop, start_server, new_event_loop, \
     get_event_loop
 from concurrent.futures import Future
-from threading import RLock, Thread
-from typing import Any
+from threading import Thread
+from typing import Any, Set
 
 from .inject_into_main_thread import prepare_injection, inject
 from .consts import DEFAULT_ADDR, Addr
 from .debugger import RemoteIPythonDebugger
 from .tty_utils import print_to_ctty
 from .communication import MESSAGE_LENGTH_FMT, MESSAGE_LENGTH_LENGTH
-from .utils import Handlers
+from .utils import Locked
 
 CTRL_D = bytes([4])
-CTRL_Z = ...
-CTRL_BACKSLASH = bytes([28])
-CTRL_Q = ...
+
 
 # TODO: is the correct thing to do is to have multiple PTYs? Then each client could have its
 #       own terminal size and type... This doesn't go hand in hand with the current IPythonDebugger
@@ -27,60 +23,38 @@ CTRL_Q = ...
 
 class ClientMulticastProtocol(Protocol):
     def __init__(self, loop: AbstractEventLoop):
-        self.loop = loop
-        self.clients = []
+        self.loop: AbstractEventLoop = loop
+        self.clients: Set[StreamWriter] = set()
 
     def add_client(self, client: StreamWriter):
-        self.clients.append(client)
+        self.clients.add(client)
+
+    async def _drain(self, client):
+        try:
+            await client.drain()
+        except ConnectionResetError:
+            self.clients.remove(client)
 
     def data_received(self, data: bytes) -> None:
+        to_remove = set()
         for client in self.clients:
-            client.write(data)
-            self.loop.create_task(client.drain())
-
-
-class Locked:
-    def __init__(self, value: Any, lock: RLock = None):
-        if lock is None:
-            lock = RLock()
-        self._value = value
-        self._lock = lock
-
-    def set(self, new_val: Any):
-        with self:
-            self._value = new_val
-
-    # TODO: make generic
-    def __enter__(self):
-        self._lock.acquire()
-        return self._value
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self._lock.release()
+            if client.is_closing():
+                to_remove.add(client)
+            else:
+                client.write(data)
+                self.loop.create_task(client.drain())
+        self.clients -= to_remove
 
 
 class DebuggerServer:
     CHUNK_SIZE = 2 ** 12
     STATE = Locked(None)
-    KEY_HANDLERS = Handlers()
 
     def __init__(self, debugger: RemoteIPythonDebugger, master_writer_stream: StreamWriter,
                  client_multicast: ClientMulticastProtocol):
         self.debugger = debugger
         self.master_writer_stream = master_writer_stream
         self.client_multicast = client_multicast
-
-
-    @KEY_HANDLERS.register(CTRL_BACKSLASH)
-    def ctrl_pipe_handler(self, _key):
-        print('yououo')
-
-    def _handle_keys(self, data: bytes) -> bytes:
-        for key, handler in self.KEY_HANDLERS:
-            if key in data:
-                data = data.replace(key, b'')
-                handler(key)
-        return data
 
     async def _client_connected(self, reader: StreamReader, writer: StreamWriter):
         self.client_multicast.add_client(writer)
@@ -93,9 +67,15 @@ class DebuggerServer:
         # TODO: only if not tracing already
         inject()
         while not reader.at_eof():
-            data = self._handle_keys(await reader.read(self.CHUNK_SIZE))
+            data = await reader.read(self.CHUNK_SIZE)
+            detach_cmd_i = data.find(CTRL_D)
+            if detach_cmd_i != -1:
+                data = data[:detach_cmd_i]
             self.master_writer_stream.write(data)
             # await self.master_writer_stream.drain()
+            if detach_cmd_i != -1:
+                writer.close()
+                break
         self.debugger.notify_client_disconnect()
         # TODO: close writer/reader when done?
 
@@ -148,12 +128,11 @@ class DebuggerServer:
 - A client can disconnect when there is an active trace, but should be warned
 - madbg.listen() can tell the server where to accept connections. It adds them to the current session
 - when a new client connects, they have a set of options
-    - ctrl-p starts snooping stdios (sent by default)
+    - ctrl-p toggle snooping stdios (on by default)
     - ctrl-c stops the program with a breakpoint (sent by default? what if we want a different thread?)
-    - ctrl-o stops snooping
     - ctrl-t choose thread
-    - ctrl-d stops the tracing
-    - ctrl-z detach, asking server to close socket (warning if a trace is still ongoing)
+    - ctrl-d detach, asking server to close socket (warning if a trace is still ongoing)
+    - ctrl-z client size pause
     - ctrl-q client side force-close
 
 Should probably stop using SIGIO, we don't want to disturb the main thread. Just create a daemon thread.

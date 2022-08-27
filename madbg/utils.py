@@ -1,5 +1,5 @@
 import sys
-import threading
+from threading import RLock
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -19,16 +19,14 @@ def preserve_sys_state():
 class Singleton(type):
     def __init__(cls, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        cls._INSTANCE = None
-        cls._INSTANCE_LOCK = threading.RLock()
+        cls._LOCKED_INSTANCE = Locked(None)
 
     def __call__(cls):
-        with cls._INSTANCE_LOCK:
-            if cls._INSTANCE is not None:
-                return cls._INSTANCE
-            instance = super().__call__()
-            cls._INSTANCE = instance
-        return instance
+        with cls._LOCKED_INSTANCE as instance:
+            if instance is None:
+                instance = super().__call__()
+                cls._LOCKED_INSTANCE.set(instance)
+            return instance
 
 
 class Handlers:
@@ -59,3 +57,23 @@ class BoundHandlers:
 
     def __iter__(self):
         return ((key, func.__get__(self.instance, self.owner)) for key, func in self.handlers.keys_to_funcs.items())
+
+
+class Locked:
+    def __init__(self, value: Any, lock: RLock = None):
+        if lock is None:
+            lock = RLock()
+        self._value = value
+        self._lock = lock
+
+    def set(self, new_val: Any):
+        with self:
+            self._value = new_val
+
+    # TODO: make generic
+    def __enter__(self):
+        self._lock.acquire()
+        return self._value
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self._lock.release()
