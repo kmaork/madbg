@@ -8,7 +8,7 @@ on:
   pull_request:
 
 jobs:
-  test:
+  test_manylinux:
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -36,9 +36,32 @@ jobs:
           name: dist
           path: .tox/dist/*
 
+  test_alpine:
+    runs-on: ubuntu-latest
+    container: ${{ matrix.container }}
+    strategy:
+      fail-fast: false
+      matrix:
+        container:
+          - "python:3.7-alpine"
+          - "python:3.8-alpine"
+          - "python:3.9-alpine"
+          - "python:3.10-alpine"
+    steps:
+      - name: Install packages
+        # git needed for checkout
+        run: apk add git
+      - uses: actions/checkout@v2
+        with:
+          submodules: true
+      - name: Install dependencies
+        run: pip install tox tox-gh-actions
+      - name: Test sdist with tox
+        run: python -m tox
+
   publish:
     if: github.event_name == 'release' && github.event.action == 'created'
-    needs: test
+    needs: [test_manylinux, test_alpine]
     runs-on: ubuntu-latest
     steps:
       - name: Download artifacts
