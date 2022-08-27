@@ -1,6 +1,7 @@
 from __future__ import annotations
 import runpy
 import os
+import signal
 import sys
 from bdb import BdbQuit
 from contextlib import contextmanager, nullcontext
@@ -11,8 +12,38 @@ from inspect import currentframe
 from IPython.terminal.debugger import TerminalPdb
 from IPython.terminal.interactiveshell import TerminalInteractiveShell
 
+from .inject_into_main_thread import inject
 from .utils import preserve_sys_state, Singleton
 from .tty_utils import PTY, TTYConfig, print_to_ctty
+
+
+def get_running_app(term_input, term_output):
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.key_binding import KeyBindings
+    kb = KeyBindings()
+
+    @kb.add('c-c')
+    def handle_ctrl_c(_event):
+        pt_app.app.exit()
+        os.kill(0, signal.SIGINT)
+
+    pt_app = PromptSession(
+        # message=(lambda: PygmentsTokens(get_prompt_tokens())),
+        # editing_mode=getattr(EditingMode, self.shell.editing_mode.upper()),
+        key_bindings=kb,
+        input=term_input,
+        output=term_output,
+        # TODO: ctrl-r still works??
+        enable_history_search=False,
+        # history=self.debugger_history,
+        # completer=self._ptcomp,
+        # enable_history_search=True,
+        # mouse_support=self.shell.mouse_support,
+        # complete_style=self.shell.pt_complete_style,
+        # style=getattr(self.shell, "style", None),
+        # color_depth=self.shell.color_depth,
+    )
+    return pt_app
 
 
 class RemoteIPythonDebugger(TerminalPdb, metaclass=Singleton):
@@ -28,9 +59,10 @@ class RemoteIPythonDebugger(TerminalPdb, metaclass=Singleton):
                          stdin=self.pty.slave_reader, stdout=self.pty.slave_writer)
         self.use_rawinput = True
         self.num_clients = 0
-        self.done_callback = None
+        self.done_callbacks = set()
         # TODO: this should be intercepted on the client side to allow force quitting the client
         self.pt_app.key_bindings.remove("c-\\")
+        self.running_app = get_running_app(self.term_input, self.term_output)
 
     def __del__(self):
         print('Closing connection', file=self.pty.slave_writer, flush=True)
@@ -38,12 +70,21 @@ class RemoteIPythonDebugger(TerminalPdb, metaclass=Singleton):
 
     def notify_client_connect(self, tty_config: TTYConfig):
         self.num_clients += 1
-        tty_config.apply(self.pty.slave_fd)
-        self.term_output.term = tty_config.term_type
+        if self.num_clients == 1:
+            tty_config.apply(self.pty.slave_fd)
+            self.term_output.term = tty_config.term_type
+            if self.num_clients == 1:
+                inject()
 
     def notify_client_disconnect(self):
         self.num_clients -= 1
-        # TODO: warn if still in trace and last client disconnected
+        if self.num_clients == 0:
+            # TODO: can we use self.stop_here (from ipython code) instead of the debugging global?
+            if self.pt_app.app.is_running:
+                self.pt_app.app.exit('quit')
+            elif self.running_app.app.is_running:
+                # TODO: need to unregister the signal handler
+                self.running_app.app.exit()
 
     def preloop(self):
         if self.num_clients == 0:
@@ -51,10 +92,9 @@ class RemoteIPythonDebugger(TerminalPdb, metaclass=Singleton):
 
     def trace_dispatch(self, frame, event, arg, check_debugging_global=False):
         """
-        Overriding super to allow the check_debugging_global and done_callback args.
+        Overriding super to support the check_debugging_global arg.
 
         :param check_debugging_global: Whether to start debugging only if _DEBUGGING_GLOBAL is in the globals.
-        :param done_callback: a callable to be called when the debug session ends.
         """
         if check_debugging_global:
             if self._DEBUGGING_GLOBAL in frame.f_globals:
@@ -71,24 +111,17 @@ class RemoteIPythonDebugger(TerminalPdb, metaclass=Singleton):
                 self._on_done()
 
     def _on_done(self):
-        if self.done_callback is not None:
-            self.done_callback()
-            self.done_callback = None
-
-    def set_trace(self, frame=None, done_callback=None):
-        """ Overriding super to add the done_callback argument, allowing cleanup after a debug session """
-        if done_callback is not None:
-            # set_trace was called again without the previous one exiting -
-            # happens on continue -> ctrl-c
-            self.done_callback = done_callback
-        if frame is None:
-            frame = currentframe().f_back
-        return super().set_trace(frame)
+        print_to_ctty('Debugger stopped')
+        for callback in self.done_callbacks:
+            callback()
+        self.done_callbacks.clear()
 
     def do_continue(self, arg):
         """ Overriding super to add a print """
         if not self.nosigint:
             print('Resuming program, press Ctrl-C to relaunch debugger.', file=self.stdout)
+        # TODO: still got the history - do we maybe want app run and not app prompt?
+        self.thread_executor.submit(self.running_app.prompt)
         return super().do_continue(arg)
 
     do_c = do_cont = do_continue

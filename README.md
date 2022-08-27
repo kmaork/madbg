@@ -10,8 +10,8 @@ A fully-featured remote debugger for python.
 tab completion, command history, line editing and more
 - Runs the IPython debugger with all its capabilities
 - Allows attaching to running programs preemptively (does not require gdb, unlike similar tools)
-- Affects the debugged program [minimally](#possible-effects), although not yet recommended for use in production environments
 - Provides TTY features even when debugged program is a deamon, or run outside a terminal
+- Affects the debugged program minimally, although not yet recommended for use in production environments
 
 ## Installation
 ```
@@ -84,14 +84,3 @@ madbg connect 8.8.8.8 1337
 ## Platforms
 
 Madbg supports linux with python>=3.7.
-
-## Possible effects
-
-What madbg does that might affect a debugged program:
-- Changes the pgid and sid of the debugged process
-- Changes the CTTY of the debugged process
-- Affects child processes in unknown ways (Not tested yet)
-
-What madbg doesn't do:
-- Writes or reads from stdio
-- Feeds your cat

@@ -45,6 +45,9 @@ class ClientMulticastProtocol(Protocol):
                 self.loop.create_task(client.drain())
         self.clients -= to_remove
 
+    def eof_received(self):
+        print('cooolllll')
+
 
 class DebuggerServer:
     CHUNK_SIZE = 2 ** 12
@@ -64,20 +67,28 @@ class DebuggerServer:
         config = pickle.loads(await reader.readexactly(config_len))
         # TODO: make thread safe
         self.debugger.notify_client_connect(config)
-        # TODO: only if not tracing already
-        inject()
+
+        @self.debugger.done_callbacks.add
+        def one_debugger_done():
+            print(reader._waiter, reader._waiter.cancelled())
+            reader.feed_eof()
+            print('yayyyyasdkjfh')
+
         while not reader.at_eof():
+            print('ya')
             data = await reader.read(self.CHUNK_SIZE)
+            print('yo')
             detach_cmd_i = data.find(CTRL_D)
             if detach_cmd_i != -1:
                 data = data[:detach_cmd_i]
             self.master_writer_stream.write(data)
-            # await self.master_writer_stream.drain()
+            # TODO: what?
+            # get_event_loop().create_task(self.master_writer_stream.drain())
             if detach_cmd_i != -1:
-                writer.close()
                 break
+        writer.close()
+        print_to_ctty(f'Client disconnected {peer}')
         self.debugger.notify_client_disconnect()
-        # TODO: close writer/reader when done?
 
     async def _serve(self, addr: Any):
         assert isinstance(addr, tuple) and isinstance(addr[0], str) and isinstance(addr[1], int)
@@ -114,14 +125,20 @@ class DebuggerServer:
             if state is None:
                 # TODO: receive addr as arg
                 cls.STATE.set(Future())
-                prepare_injection()
-                Thread(daemon=True, target=cls._run, args=(DEFAULT_ADDR, RemoteIPythonDebugger())).start()
+                debugger = RemoteIPythonDebugger()
+                prepare_injection(debugger)
+                Thread(daemon=True, target=cls._run, args=(DEFAULT_ADDR, debugger)).start()
             elif state.done():
                 # Raise the exception
                 state.result()
 
 
 """
+Next steps:
+    - q - why feed_eof not working??????????
+    - don't use the sigint at all! we don't need it, we have a callback...
+
+python -c $'import madbg; madbg.start()\nwhile 1: print(__import__("time").sleep(1) or ":)")'
 - There is only one debugger with one session
 - A trace can start at any thread because of a set_trace(), or a client setting it
 - A trace can start when there is no client connected, but should print a warning to tty
