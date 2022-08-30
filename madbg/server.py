@@ -78,6 +78,7 @@ class DebuggerServer:
             # TODO: what?
             # loop.create_task(self.master_writer_stream.drain())
             if detach_cmd_i != -1:
+                writer.write(b'\r\nDetaching\r\n')
                 break
         writer.close()
         print_to_ctty(f'Client disconnected {peer}')
