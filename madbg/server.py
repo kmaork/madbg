@@ -2,12 +2,11 @@ import os
 import pickle
 import struct
 from asyncio import Protocol, StreamReader, StreamWriter, AbstractEventLoop, start_server, new_event_loop, \
-    get_event_loop
-from concurrent.futures import Future
+    get_event_loop, Future
 from threading import Thread
 from typing import Any, Set
 
-from .inject_into_main_thread import prepare_injection, inject
+from .inject_into_main_thread import prepare_injection
 from .consts import DEFAULT_ADDR, Addr
 from .debugger import RemoteIPythonDebugger
 from .tty_utils import print_to_ctty
@@ -67,23 +66,20 @@ class DebuggerServer:
         config = pickle.loads(await reader.readexactly(config_len))
         # TODO: make thread safe
         self.debugger.notify_client_connect(config)
+        loop = get_event_loop()
 
         @self.debugger.done_callbacks.add
         def one_debugger_done():
-            print(reader._waiter, reader._waiter.cancelled())
-            reader.feed_eof()
-            print('yayyyyasdkjfh')
+            loop.call_soon_threadsafe(reader.feed_eof)
 
         while not reader.at_eof():
-            print('ya')
             data = await reader.read(self.CHUNK_SIZE)
-            print('yo')
             detach_cmd_i = data.find(CTRL_D)
             if detach_cmd_i != -1:
                 data = data[:detach_cmd_i]
             self.master_writer_stream.write(data)
             # TODO: what?
-            # get_event_loop().create_task(self.master_writer_stream.drain())
+            # loop.create_task(self.master_writer_stream.drain())
             if detach_cmd_i != -1:
                 break
         writer.close()
@@ -117,7 +113,9 @@ class DebuggerServer:
     @classmethod
     def _run(cls, addr: Any, debugger: RemoteIPythonDebugger):
         # TODO: Is that right? Not get_event_loop?
-        new_event_loop().run_until_complete(cls._async_run(addr, debugger))
+        loop = new_event_loop()
+        loop.set_debug(True)
+        loop.run_until_complete(cls._async_run(addr, debugger))
 
     @classmethod
     def make_sure_listening_at(cls, addr: Addr):
@@ -135,7 +133,6 @@ class DebuggerServer:
 
 """
 Next steps:
-    - q - why feed_eof not working??????????
     - don't use the sigint at all! we don't need it, we have a callback...
 
 python -c $'import madbg; madbg.start()\nwhile 1: print(__import__("time").sleep(1) or ":)")'
