@@ -25,7 +25,10 @@ def get_running_app(term_input, term_output):
     @kb.add('c-c')
     def handle_ctrl_c(_event):
         pt_app.app.exit()
-        os.kill(0, signal.SIGINT)
+        # This is what happens in the parent, is it equivalent?
+        # self.set_step()
+        # self.set_trace(frame)
+        inject()
 
     pt_app = PromptSession(
         # message=(lambda: PygmentsTokens(get_prompt_tokens())),
@@ -56,7 +59,7 @@ class RemoteIPythonDebugger(TerminalPdb, metaclass=Singleton):
         self.term_input = Vt100Input(self.pty.slave_reader)
         self.term_output = Vt100_Output.from_pty(self.pty.slave_writer)
         super().__init__(pt_session_options=dict(input=self.term_input, output=self.term_output),
-                         stdin=self.pty.slave_reader, stdout=self.pty.slave_writer)
+                         stdin=self.pty.slave_reader, stdout=self.pty.slave_writer, nosigint=True)
         self.use_rawinput = True
         self.num_clients = 0
         self.done_callbacks = set()
@@ -118,9 +121,8 @@ class RemoteIPythonDebugger(TerminalPdb, metaclass=Singleton):
 
     def do_continue(self, arg):
         """ Overriding super to add a print """
-        if not self.nosigint:
-            print('Resuming program, press Ctrl-C to relaunch debugger.', file=self.stdout)
-        # TODO: still got the history - do we maybe want app run and not app prompt?
+        print('Resuming program, press Ctrl-C to relaunch debugger.', file=self.stdout)
+        # TODO: still got the history (c-r) - do we maybe want app run and not app prompt?
         self.thread_executor.submit(self.running_app.prompt)
         return super().do_continue(arg)
 

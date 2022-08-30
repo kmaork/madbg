@@ -10,8 +10,8 @@ A fully-featured remote debugger for python.
 tab completion, command history, line editing and more
 - Runs the IPython debugger with all its capabilities
 - Allows attaching to running programs preemptively (does not require gdb, unlike similar tools)
+- Affects the debugged program [minimally](#possible-effects), although not yet recommended for use in production environments
 - Provides TTY features even when debugged program is a deamon, or run outside a terminal
-- Affects the debugged program minimally, although not yet recommended for use in production environments
 
 ## Installation
 ```
@@ -84,3 +84,13 @@ madbg connect 8.8.8.8 1337
 ## Platforms
 
 Madbg supports linux with python>=3.7.
+
+## Possible effects
+What madbg avoids doing (that other solutions mostly don't):
+- Writing or reads from the debugee's stdio
+- Changing the SIGINT handler of the debugee
+
+What madbg might do (that other solutions mostly won't):
+- Using `madbg attach` might cause a deadlock in debugees if they are mid-malloc, which is an open issue in pyinjector.
+  It is very uncommon, but still means you shouldn't use madbg in production.
+- Opens a socket

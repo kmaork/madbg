@@ -44,9 +44,6 @@ class ClientMulticastProtocol(Protocol):
                 self.loop.create_task(client.drain())
         self.clients -= to_remove
 
-    def eof_received(self):
-        print('cooolllll')
-
 
 class DebuggerServer:
     CHUNK_SIZE = 2 ** 12
@@ -133,7 +130,8 @@ class DebuggerServer:
 
 """
 Next steps:
-    - don't use the sigint at all! we don't need it, we have a callback...
+    - client-level detach (c-z, c-\)
+    - support mac n windows
 
 python -c $'import madbg; madbg.start()\nwhile 1: print(__import__("time").sleep(1) or ":)")'
 - There is only one debugger with one session
@@ -158,7 +156,7 @@ The server can set_trace on the main thread by using a signal. Sigint should be 
 
 Bug in pdb - if we are in a PEP475 function, ctrl c runs the siginthandler. But then the syscall
 is resumed, and no python code is run. When the user presses ctrl-c again, the handler runs again,
-but this time it invokes the debugger... Pdb doesn't allow us to send a sigint here.
+but this time sys.trace is in place so the handler is debugged... Pdb doesn't allow us to send a sigint here.
 The solution is probably to somehow prevent tracing of the handler... Doesn't sound simple.
 
 ==================
