@@ -3,6 +3,7 @@ import pickle
 import struct
 from asyncio import Protocol, StreamReader, StreamWriter, AbstractEventLoop, start_server, new_event_loop, \
     get_event_loop, Future
+from dataclasses import dataclass, field
 from threading import Thread
 from typing import Any, Set
 
@@ -19,6 +20,11 @@ CTRL_D = bytes([4])
 # TODO: is the correct thing to do is to have multiple PTYs? Then each client could have its
 #       own terminal size and type... This doesn't go hand in hand with the current IPythonDebugger
 #       design, as it assumes it is singletonic, and it has one output PTY.
+
+@dataclass
+class State:
+    address: tuple
+    future: Future = field(default_factory=Future)
 
 class ClientMulticastProtocol(Protocol):
     def __init__(self, loop: AbstractEventLoop):
@@ -120,33 +126,31 @@ class DebuggerServer:
         with cls.STATE as state:
             if state is None:
                 # TODO: receive addr as arg
-                cls.STATE.set(Future())
+                cls.STATE.set(State(addr))
                 debugger = RemoteIPythonDebugger()
                 prepare_injection(debugger)
                 Thread(daemon=True, target=cls._run, args=(addr, debugger)).start()
-            elif state.done():
+            elif state.future.done():
                 # Raise the exception
-                state.result()
+                state.future.result()
             else:
-                # TODO
-                raise RuntimeError('No support for double bind')
+                if addr != state.address:
+                    # TODO
+                    raise RuntimeError('No support for double bind')
 
 
 """
 Next steps:
-    - attach
-        need to do something very minimal during attach, like registering a signal handler or add pending action
-        pending action is better than another fucking signal, but it will wait for stuck syscalls...
-        pyinjector.pyinjector.InjectorError: injector_inject returned -1: The target process unexpectedly stopped by signal 17.
-        pyinjector issues:
-            - getting the python error back to us or at least know that it failed
-            - threads
-            - deadlock
+    - pyinjector issues:
+        - getting the python error back to us or at least know that it failed
+        - threads
+        - deadlock
     - client-level detach (c-z, c-\)
     - support mac n windows
 
 
 python -c $'import madbg; madbg.start()\nwhile 1: print(__import__("time").sleep(1) or ":)")'
+python -c $'while 1: print(__import__("time").sleep(1) or ":)")'
 - There is only one debugger with one session
 - A trace can start at any thread because of a set_trace(), or a client setting it
 - A trace can start when there is no client connected, but should print a warning to tty

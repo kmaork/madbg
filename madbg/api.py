@@ -1,6 +1,4 @@
-import os
 import re
-import signal
 import sys
 from traceback import format_exc
 from contextlib import nullcontext

@@ -1,14 +1,12 @@
 from __future__ import annotations
 import runpy
 import os
-import signal
 import sys
 from bdb import BdbQuit
 from contextlib import contextmanager, nullcontext
 from typing import ContextManager
 from prompt_toolkit.input.vt100 import Vt100Input
 from prompt_toolkit.output.vt100 import Vt100_Output
-from inspect import currentframe
 from IPython.terminal.debugger import TerminalPdb
 from IPython.terminal.interactiveshell import TerminalInteractiveShell
 
@@ -81,13 +79,19 @@ class RemoteIPythonDebugger(TerminalPdb, metaclass=Singleton):
 
     def notify_client_disconnect(self):
         self.num_clients -= 1
+        print(0)
         if self.num_clients == 0:
             # TODO: can we use self.stop_here (from ipython code) instead of the debugging global?
+            print(1)
             if self.pt_app.app.is_running:
+                print(2)
                 self.pt_app.app.exit('quit')
+                print(3)
             elif self.running_app.app.is_running:
+                print(4)
                 # TODO: need to unregister the signal handler
                 self.running_app.app.exit()
+                print(5)
 
     def preloop(self):
         if self.num_clients == 0:
@@ -106,12 +110,16 @@ class RemoteIPythonDebugger(TerminalPdb, metaclass=Singleton):
                 return None
         bdb_quit = False
         try:
+            print('a')
             return super().trace_dispatch(frame, event, arg)
         except BdbQuit:
             bdb_quit = True
         finally:
+            print('x')
             if self.quitting or bdb_quit:
+                print('y')
                 self._on_done()
+                print('z')
 
     def _on_done(self):
         print_to_ctty('Debugger stopped')
