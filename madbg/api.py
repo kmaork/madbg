@@ -13,20 +13,17 @@ from .client import connect_to_debugger
 from .consts import DEFAULT_ADDR, DEFAULT_CONNECT_TIMEOUT, Addr
 from .debugger import RemoteIPythonDebugger
 
-DEBUGGER_CONNECTED_SIGNAL = signal.SIGUSR1
-
 
 def start(addr: Addr = DEFAULT_ADDR):
     DebuggerServer.make_sure_listening_at(addr)
 
 
 def _inject_set_trace(pid: int, addr: Addr = DEFAULT_ADDR):
+    ip, port = addr
     assert isinstance(ip, str)
     assert re.fullmatch('[.0-9]+', ip)
     assert isinstance(port, int)
-    sig_num = DEBUGGER_CONNECTED_SIGNAL.value
-    inject_py(pid, f'__import__("signal").signal({sig_num},lambda _,f:__import__("madbg").set_trace(f,"{ip}",{port}))')
-    os.kill(pid, sig_num)
+    inject_py(pid, f'__import__("madbg").start(({ip!r},{port}))')
 
 
 # TODO: DEFAULT_PORT

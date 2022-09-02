@@ -123,16 +123,28 @@ class DebuggerServer:
                 cls.STATE.set(Future())
                 debugger = RemoteIPythonDebugger()
                 prepare_injection(debugger)
-                Thread(daemon=True, target=cls._run, args=(DEFAULT_ADDR, debugger)).start()
+                Thread(daemon=True, target=cls._run, args=(addr, debugger)).start()
             elif state.done():
                 # Raise the exception
                 state.result()
+            else:
+                # TODO
+                raise RuntimeError('No support for double bind')
 
 
 """
 Next steps:
+    - attach
+        need to do something very minimal during attach, like registering a signal handler or add pending action
+        pending action is better than another fucking signal, but it will wait for stuck syscalls...
+        pyinjector.pyinjector.InjectorError: injector_inject returned -1: The target process unexpectedly stopped by signal 17.
+        pyinjector issues:
+            - getting the python error back to us or at least know that it failed
+            - threads
+            - deadlock
     - client-level detach (c-z, c-\)
     - support mac n windows
+
 
 python -c $'import madbg; madbg.start()\nwhile 1: print(__import__("time").sleep(1) or ":)")'
 - There is only one debugger with one session
