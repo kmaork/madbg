@@ -16,19 +16,6 @@ def preserve_sys_state():
         sys.path[:] = sys_path
 
 
-class Singleton(type):
-    def __init__(cls, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        cls._LOCKED_INSTANCE = Locked(None)
-
-    def __call__(cls):
-        with cls._LOCKED_INSTANCE as instance:
-            if instance is None:
-                instance = super().__call__()
-                cls._LOCKED_INSTANCE.set(instance)
-            return instance
-
-
 class Handlers:
     def __init__(self):
         self.keys_to_funcs = {}

@@ -1,30 +1,28 @@
 import os
 import pickle
 import struct
-from asyncio import Protocol, StreamReader, StreamWriter, AbstractEventLoop, start_server, new_event_loop, \
-    get_event_loop, Future
+import threading
+from asyncio import Protocol, StreamReader, StreamWriter, AbstractEventLoop, start_server, new_event_loop, Future
 from dataclasses import dataclass, field
 from threading import Thread
 from typing import Any, Set
 
-from .inject_into_main_thread import prepare_injection
-from .consts import DEFAULT_ADDR, Addr
+from .consts import Addr
 from .debugger import RemoteIPythonDebugger
 from .tty_utils import print_to_ctty
 from .communication import MESSAGE_LENGTH_FMT, MESSAGE_LENGTH_LENGTH
 from .utils import Locked
+from .app import create
 
 CTRL_D = bytes([4])
+CHUNK_SIZE = 2 ** 12
 
-
-# TODO: is the correct thing to do is to have multiple PTYs? Then each client could have its
-#       own terminal size and type... This doesn't go hand in hand with the current IPythonDebugger
-#       design, as it assumes it is singletonic, and it has one output PTY.
 
 @dataclass
 class State:
     address: tuple
     future: Future = field(default_factory=Future)
+
 
 class ClientMulticastProtocol(Protocol):
     def __init__(self, loop: AbstractEventLoop):
@@ -33,6 +31,9 @@ class ClientMulticastProtocol(Protocol):
 
     def add_client(self, client: StreamWriter):
         self.clients.add(client)
+
+    def remove_client(self, client: StreamWriter):
+        self.clients.remove(client)
 
     async def _drain(self, client):
         try:
@@ -51,17 +52,24 @@ class ClientMulticastProtocol(Protocol):
         self.clients -= to_remove
 
 
-class DebuggerServer:
-    CHUNK_SIZE = 2 ** 12
-    STATE = Locked(None)
+@dataclass
+class Session:
+    loop: AbstractEventLoop
+    debugger: RemoteIPythonDebugger
+    client_multicast: ClientMulticastProtocol
+    master_writer_stream: StreamWriter
 
-    def __init__(self, debugger: RemoteIPythonDebugger, master_writer_stream: StreamWriter,
-                 client_multicast: ClientMulticastProtocol):
-        self.debugger = debugger
-        self.master_writer_stream = master_writer_stream
-        self.client_multicast = client_multicast
+    @classmethod
+    async def create(cls, loop: AbstractEventLoop, debugger: RemoteIPythonDebugger):
+        master_reader = os.fdopen(debugger.pty.master_fd, 'rb')
+        master_writer = os.fdopen(debugger.pty.master_fd, 'wb')
+        client_multicast = ClientMulticastProtocol(loop)
+        await loop.connect_read_pipe(lambda: client_multicast, master_reader)
+        write_transport, write_protocol = await loop.connect_write_pipe(Protocol, master_writer)
+        master_writer_stream = StreamWriter(write_transport, write_protocol, None, loop)
+        return cls(loop, debugger, client_multicast, master_writer_stream)
 
-    async def _client_connected(self, reader: StreamReader, writer: StreamWriter):
+    async def connect_client(self, reader: StreamReader, writer: StreamWriter):
         self.client_multicast.add_client(writer)
         peer = writer.get_extra_info('peername')
         print_to_ctty(f'Debugger client connected from {peer}')
@@ -69,14 +77,13 @@ class DebuggerServer:
         config = pickle.loads(await reader.readexactly(config_len))
         # TODO: make thread safe
         self.debugger.notify_client_connect(config)
-        loop = get_event_loop()
 
         @self.debugger.done_callbacks.add
         def one_debugger_done():
-            loop.call_soon_threadsafe(reader.feed_eof)
+            self.loop.call_soon_threadsafe(reader.feed_eof)
 
         while not reader.at_eof():
-            data = await reader.read(self.CHUNK_SIZE)
+            data = await reader.read(CHUNK_SIZE)
             detach_cmd_i = data.find(CTRL_D)
             if detach_cmd_i != -1:
                 data = data[:detach_cmd_i]
@@ -89,6 +96,26 @@ class DebuggerServer:
         writer.close()
         print_to_ctty(f'Client disconnected {peer}')
         self.debugger.notify_client_disconnect()
+        self.client_multicast.remove_client(writer)
+
+
+@dataclass
+class DebuggerServer:
+    STATE = Locked(None)
+
+    loop: AbstractEventLoop
+    sessions: dict[Thread, Session] = field(default_factory=dict)
+
+    async def get_session(self, thread: Thread) -> Session:
+        session = self.sessions.get(thread)
+        if session is None:
+            debugger = RemoteIPythonDebugger.get_instance(thread, self.loop)
+            session = self.sessions[thread] = await Session.create(self.loop, debugger)
+        return session
+
+    async def _client_connected(self, reader: StreamReader, writer: StreamWriter):
+        session = await self.get_session(threading.main_thread())
+        await session.connect_client(reader, writer)
 
     async def _serve(self, addr: Any):
         assert isinstance(addr, tuple) and isinstance(addr[0], str) and isinstance(addr[1], int)
@@ -98,15 +125,8 @@ class DebuggerServer:
         await server.serve_forever()
 
     @classmethod
-    async def _async_run(cls, addr: Any, debugger: RemoteIPythonDebugger):
-        loop = get_event_loop()
-        master_reader = os.fdopen(debugger.pty.master_fd, 'rb')
-        master_writer = os.fdopen(debugger.pty.master_fd, 'wb')
-        client_multicast = ClientMulticastProtocol(loop)
-        await loop.connect_read_pipe(lambda: client_multicast, master_reader)
-        write_transport, write_protocol = await loop.connect_write_pipe(Protocol, master_writer)
-        master_writer_stream = StreamWriter(write_transport, write_protocol, None, loop)
-        self = cls(debugger, master_writer_stream, client_multicast)
+    async def _async_run(cls, loop: AbstractEventLoop, addr: Any):
+        self = cls(loop)
         try:
             await self._serve(addr)
         except Exception as e:
@@ -115,11 +135,11 @@ class DebuggerServer:
             raise
 
     @classmethod
-    def _run(cls, addr: Any, debugger: RemoteIPythonDebugger):
+    def _run(cls, addr: Any):
         # TODO: Is that right? Not get_event_loop?
         loop = new_event_loop()
         loop.set_debug(True)
-        loop.run_until_complete(cls._async_run(addr, debugger))
+        loop.run_until_complete(cls._async_run(loop, addr))
 
     @classmethod
     def make_sure_listening_at(cls, addr: Addr):
@@ -127,9 +147,7 @@ class DebuggerServer:
             if state is None:
                 # TODO: receive addr as arg
                 cls.STATE.set(State(addr))
-                debugger = RemoteIPythonDebugger()
-                prepare_injection(debugger)
-                Thread(daemon=True, target=cls._run, args=(addr, debugger)).start()
+                Thread(daemon=True, target=cls._run, args=(addr,)).start()
             elif state.future.done():
                 # Raise the exception
                 state.future.result()
@@ -140,12 +158,39 @@ class DebuggerServer:
 
 
 """
+Design:
+    one server
+    debugger per thread (because set-trace is per thread)
+    when client connects to server, offered to connect to any of the threads
+
 Next steps:
+    - revert safe injection diff in hypno
+    - when writing ? in the terminal, "Object `` not found." is printed to stdout 
+    - no \r printed...
+    - continue raises exceptions
+    - run in thread using ptrace - better than signal??
+        signal: interfering with signal handlers
+        ptrace: invoke subprocess, load dll
+            which of them is more reentrant?
+            can we at least verify the dest thread is blocked on a syscall? this is probable as we are holding
+            the gil.
+            do we have another approach?
+    - use the new api for setting trace on other threads
+    - user connects, gets main app - choose thread to debug
+      to users can debug two separate threads at once
+      when two users are debugging the same thread:
+        double connect?
+        decline second user?
+      each thread should have only one controller state, therefore one app
+      the app could be configured with the first user's terminal, and connected through a raw pty to each
+      user's pty
+      so each thread has a pty, and each user has a pty
     - pyinjector issues:
         - getting the python error back to us or at least know that it failed
         - threads
         - deadlock
     - client-level detach (c-z, c-\)
+    - support processes without tty
     - support mac n windows
 
 

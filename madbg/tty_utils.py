@@ -1,25 +1,14 @@
 from __future__ import annotations
-
 import errno
 import os
 import pty
 import struct
-from contextlib import contextmanager
+import tty
 from dataclasses import dataclass
-from functools import cached_property
-import signal
 import fcntl
 import termios
+from functools import cached_property
 from typing import Tuple
-
-
-@contextmanager
-def set_handler(sig, handler):
-    old = signal.signal(sig, handler)
-    try:
-        yield old
-    finally:
-        signal.signal(sig, old)
 
 
 @dataclass
@@ -59,12 +48,12 @@ class PTY:
     slave_fd: int
     _closed: bool = False
 
-    @property
+    @cached_property
     def slave_reader(self):
         # TODO: pass closefd?
         return os.fdopen(self.slave_fd, 'r')
 
-    @property
+    @cached_property
     def slave_writer(self):
         return os.fdopen(self.slave_fd, 'w')
 
@@ -73,6 +62,9 @@ class PTY:
             termios.tcdrain(self.slave_fd)
             os.close(self.master_fd)
             self._closed = True
+
+    def set_raw(self):
+        tty.setraw(self.slave_fd, termios.TCSANOW)
 
     @classmethod
     def open(cls) -> PTY:
