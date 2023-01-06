@@ -9,11 +9,15 @@ from inspect import currentframe
 from threading import Thread
 from typing import ContextManager
 from hypno import run_in_thread
+from prompt_toolkit import Application
 from prompt_toolkit.formatted_text import PygmentsTokens
 from prompt_toolkit.input.vt100 import Vt100Input
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.layout import Layout
 from prompt_toolkit.output.vt100 import Vt100_Output
 from IPython.terminal.debugger import TerminalPdb
 from IPython.terminal.interactiveshell import TerminalInteractiveShell
+from prompt_toolkit.widgets import Label
 from pygments.token import Token
 
 from .utils import preserve_sys_state
@@ -21,33 +25,21 @@ from .tty_utils import PTY, TTYConfig, print_to_ctty
 
 
 def get_running_app(debugger):
-    from prompt_toolkit import PromptSession
-    from prompt_toolkit.key_binding import KeyBindings
     kb = KeyBindings()
 
     @kb.add('c-c')
     def handle_ctrl_c(_event):
-        pt_app.app.exit()
-        # This is what happens in the parent, is it equivalent?
-        # self.set_step()
-        # self.set_trace(frame)
-        debugger.attach()
+        pt_app.exit()
+        # TODO: not sure why, but solves a bug where cant type after continue+ctrl-c
+        _event._app.loop.call_soon_threadsafe(debugger.attach)
+        # debugger.attach()
 
-    pt_app = PromptSession(
-        # message=(lambda: PygmentsTokens(get_prompt_tokens())),
-        # editing_mode=getattr(EditingMode, self.shell.editing_mode.upper()),
+    pt_app = Application(
+        layout=Layout(Label('Press Ctrl-C to resume debugging')),
         key_bindings=kb,
         input=debugger.term_input,
         output=debugger.term_output,
-        # TODO: ctrl-r still works??
-        enable_history_search=False,
-        # history=self.debugger_history,
-        # completer=self._ptcomp,
-        # enable_history_search=True,
-        # mouse_support=self.shell.mouse_support,
-        # complete_style=self.shell.pt_complete_style,
-        # style=getattr(self.shell, "style", None),
-        # color_depth=self.shell.color_depth,
+        erase_when_done=True,
     )
     return pt_app
 
@@ -55,6 +47,57 @@ def get_running_app(debugger):
 class RemoteIPythonDebugger(TerminalPdb):
     _DEBUGGING_GLOBAL = 'DEBUGGING_WITH_MADBG'
     _INSTANCES = {}
+
+    def cmdloop(self, intro=None):
+        """Repeatedly issue a prompt, accept input, parse an initial prefix
+        off the received input, and dispatch to action methods, passing them
+        the remainder of the line as argument.
+
+        override the same methods from cmd.Cmd to provide prompt toolkit replacement.
+        """
+        if not self.use_rawinput:
+            raise ValueError('Sorry ipdb does not support use_rawinput=False')
+
+        # In order to make sure that prompt, which uses asyncio doesn't
+        # interfere with applications in which it's used, we always run the
+        # prompt itself in a different thread (we can't start an event loop
+        # within an event loop). This new thread won't have any event loop
+        # running, and here we run our prompt-loop.
+        self.preloop()
+
+        try:
+            if intro is not None:
+                self.intro = intro
+            if self.intro:
+                print(self.intro, file=self.stdout)
+            stop = None
+            while not stop:
+                if self.cmdqueue:
+                    line = self.cmdqueue.pop(0)
+                else:
+                    self._ptcomp.ipy_completer.namespace = self.curframe_locals
+                    self._ptcomp.ipy_completer.global_namespace = self.curframe.f_globals
+
+                    # Run the prompt in a different thread.
+                    try:
+                        from queue import Queue
+                        q = Queue(1)
+                        async def yo():
+                            q.put(await self.pt_app.prompt_async())
+                        self.loop.call_soon_threadsafe(lambda: self.loop.create_task(yo()))
+                        print('haaaaaaa')
+                        line = q.get()
+                        print('weeeeee')
+                    except EOFError:
+                        line = "EOF"
+                    print(999)
+
+                line = self.precmd(line)
+                stop = self.onecmd(line)
+                stop = self.postcmd(stop, line)
+            self.postloop()
+        except Exception:
+            raise
 
     def __init__(self, thread: Thread, loop: AbstractEventLoop):
         """
@@ -117,8 +160,8 @@ class RemoteIPythonDebugger(TerminalPdb):
             # TODO: can we use self.stop_here (from ipython code) instead of the debugging global?
             if self.pt_app.app.is_running:
                 self.pt_app.app.exit('quit')
-            elif self.running_app.app.is_running:
-                self.running_app.app.exit()
+            elif self.running_app.is_running:
+                self.running_app.exit()
 
     def preloop(self):
         if self.num_clients == 0:
@@ -131,11 +174,13 @@ class RemoteIPythonDebugger(TerminalPdb):
         if self.check_debugging_global:
             if self._DEBUGGING_GLOBAL in frame.f_globals:
                 self.check_debugging_global = False
+                del frame.f_globals[self._DEBUGGING_GLOBAL]
             else:
                 return None
         bdb_quit = False
         try:
-            return super().trace_dispatch(frame, event, arg)
+            s = super().trace_dispatch(frame, event, arg)
+            return s
         except BdbQuit:
             bdb_quit = True
         finally:
@@ -148,10 +193,14 @@ class RemoteIPythonDebugger(TerminalPdb):
             callback()
         self.done_callbacks.clear()
 
+    async def lol(self, a):
+        print(11111)
+        await a
+        print(222222)
+
     def do_continue(self, arg):
-        self._on_done()
         # TODO: still got the history (c-r) - do we maybe want app run and not app prompt?
-        self.loop.call_soon_threadsafe(self.running_app.prompt_async)
+        self.loop.call_soon_threadsafe(lambda: self.loop.create_task(self.lol(self.running_app.run_async())))
         # This doesn't register a SIGINT handler as we set self.nosigint to True
         return super().do_continue(arg)
 

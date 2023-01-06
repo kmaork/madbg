@@ -158,10 +158,15 @@ class DebuggerServer:
 
 
 """
-Design:
-    one server
-    debugger per thread (because set-trace is per thread)
-    when client connects to server, offered to connect to any of the threads
+continue doesn't work only when running both apps one after another, even when on the same ioloop!
+it works when only one app is run.
+Executing <Handle _attached_input.<locals>.callback_wrapper() at /usr/local/lib/python3.9/dist-packages/prompt_toolkit/input/vt100.py:162 created at /usr/lib/python3.9/asyncio/selector_events.py:254> took 0.124 seconds
+is a hint?
+why does it take so long?
+is the old reader still registered? can we try and close the old file and see what happens?
+
+app - show periodically updated stack traces
+deadlock detection support
 
 Next steps:
     - revert safe injection diff in hypno
