@@ -1,15 +1,57 @@
 from __future__ import annotations
+
+from contextlib import contextmanager
+
 import os
 import struct
 from collections import defaultdict
-from functools import partial
-from asyncio import new_event_loop
-from typing import Dict, Set, Optional
+from asyncio import new_event_loop, StreamReader, wait, FIRST_COMPLETED, Event, get_running_loop
+from typing import Dict, Set, Optional, BinaryIO
 
 MESSAGE_LENGTH_FMT = 'I'
 MESSAGE_LENGTH_LENGTH = struct.calcsize(MESSAGE_LENGTH_FMT)
+CHUNK_SIZE = 2048
 
 PipeDict = Dict[int, Set[int]]
+
+
+async def read_into(reader: StreamReader, writer_fd: int, chunk_size=CHUNK_SIZE):
+    data = await reader.read(chunk_size)
+    # TODO: Use async mechanism to make sure all data is written
+    os.write(writer_fd, data)
+
+
+async def read_into_until_stopped(reader: StreamReader, writer_fd: int, done: Event):
+    loop = get_running_loop()
+    done_task = loop.create_task(done.wait())
+    while True:
+        finished, unfinished = await wait([done_task, loop.create_task(read_into(reader, writer_fd))],
+                                          return_when=FIRST_COMPLETED)
+        if done_task in finished:
+            break
+
+
+@contextmanager
+def context_read_into(reader: StreamReader, writer_fd: int):
+    stop = Event()
+    get_running_loop().create_task(read_into_until_stopped(reader, writer_fd, stop))
+    try:
+        yield
+    finally:
+        stop.set()
+
+
+def read_new_data(fd: int, chunk_size=CHUNK_SIZE) -> bytearray:
+    data = bytearray()
+    try:
+        while not data:
+            new_data = os.read(fd, chunk_size)
+            if not new_data:
+                break
+            data.extend(new_data)
+    except OSError:
+        pass
+    return data
 
 
 class Piping:
@@ -25,9 +67,9 @@ class Piping:
 
     def add_pair(self, reader_fd: int, writer_fd: int):
         if reader_fd not in self.readers_to_writers:
-            self.loop.add_reader(reader_fd, partial(self._read, reader_fd))
+            self.loop.add_reader(reader_fd, self._read, reader_fd)
         if writer_fd not in self.writers_to_readers:
-            self.loop.add_writer(writer_fd, partial(self._write, writer_fd))
+            self.loop.add_writer(writer_fd, self._write, writer_fd)
         self.readers_to_writers[reader_fd].add(writer_fd)
         self.writers_to_readers[writer_fd].add(reader_fd)
 
@@ -52,10 +94,7 @@ class Piping:
                 self._remove_writer(writer_fd)
 
     def _read(self, src_fd):
-        try:
-            data = os.read(src_fd, 1024)
-        except OSError:
-            data = ''
+        data = read_new_data(src_fd)
         if data:
             for dest_fd in self.readers_to_writers[src_fd]:
                 self.buffers[dest_fd] += data

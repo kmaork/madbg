@@ -1,4 +1,7 @@
 from __future__ import annotations
+
+from contextlib import contextmanager
+
 import errno
 import os
 import pty
@@ -8,7 +11,7 @@ from dataclasses import dataclass
 import fcntl
 import termios
 from functools import cached_property
-from typing import Tuple
+from typing import Tuple, ContextManager
 
 
 @dataclass
@@ -50,12 +53,19 @@ class PTY:
 
     @cached_property
     def slave_reader(self):
-        # TODO: pass closefd?
         return os.fdopen(self.slave_fd, 'r')
 
     @cached_property
     def slave_writer(self):
         return os.fdopen(self.slave_fd, 'w')
+
+    @cached_property
+    def master_reader(self):
+        return os.fdopen(self.master_fd, 'r')
+
+    @cached_property
+    def master_writer(self):
+        return os.fdopen(self.master_fd, 'w')
 
     def close(self):
         if not self._closed:
@@ -67,9 +77,16 @@ class PTY:
         tty.setraw(self.slave_fd, termios.TCSANOW)
 
     @classmethod
-    def open(cls) -> PTY:
+    def new(cls) -> PTY:
         master_fd, slave_fd = pty.openpty()
         return cls(master_fd, slave_fd)
+
+    @classmethod
+    @contextmanager
+    def open(cls) -> ContextManager[PTY]:
+        open_pty = cls.new()
+        yield open_pty
+        open_pty.close()
 
 
 def print_to_ctty(*args):

@@ -1,3 +1,5 @@
+from contextlib import contextmanager
+
 import os
 import pickle
 import struct
@@ -9,10 +11,10 @@ from typing import Any, Set
 
 from .consts import Addr
 from .debugger import RemoteIPythonDebugger
-from .tty_utils import print_to_ctty
-from .communication import MESSAGE_LENGTH_FMT, MESSAGE_LENGTH_LENGTH
+from .tty_utils import print_to_ctty, PTY, TTYConfig
+from .communication import MESSAGE_LENGTH_FMT, MESSAGE_LENGTH_LENGTH, read_new_data, context_read_into
 from .utils import Locked
-from .app import create
+from .app import create_app
 
 CTRL_D = bytes([4])
 CHUNK_SIZE = 2 ** 12
@@ -69,14 +71,10 @@ class Session:
         master_writer_stream = StreamWriter(write_transport, write_protocol, None, loop)
         return cls(loop, debugger, client_multicast, master_writer_stream)
 
-    async def connect_client(self, reader: StreamReader, writer: StreamWriter):
+    async def connect_client(self, reader: StreamReader, writer: StreamWriter, tty_config: TTYConfig):
         self.client_multicast.add_client(writer)
-        peer = writer.get_extra_info('peername')
-        print_to_ctty(f'Debugger client connected from {peer}')
-        config_len = struct.unpack(MESSAGE_LENGTH_FMT, await reader.readexactly(MESSAGE_LENGTH_LENGTH))[0]
-        config = pickle.loads(await reader.readexactly(config_len))
         # TODO: make thread safe
-        self.debugger.notify_client_connect(config)
+        self.debugger.notify_client_connect(tty_config)
 
         @self.debugger.done_callbacks.add
         def one_debugger_done():
@@ -93,11 +91,8 @@ class Session:
             if detach_cmd_i != -1:
                 writer.write(b'\r\nDetaching\r\n')
                 break
-        writer.close()
-        print_to_ctty(f'Client disconnected {peer}')
         self.debugger.notify_client_disconnect()
         self.client_multicast.remove_client(writer)
-
 
 @dataclass
 class DebuggerServer:
@@ -113,15 +108,46 @@ class DebuggerServer:
             session = self.sessions[thread] = await Session.create(self.loop, debugger)
         return session
 
-    async def _client_connected(self, reader: StreamReader, writer: StreamWriter):
-        session = await self.get_session(threading.main_thread())
-        await session.connect_client(reader, writer)
+    @contextmanager
+    def _connect_pty(self, pty: PTY, reader: StreamReader, writer: StreamWriter):
+        def bla():
+            writer.write(read_new_data(pty.master_fd))
+            self.loop.create_task(writer.drain())
+        self.loop.add_reader(pty.master_fd, bla)
+        try:
+            with context_read_into(reader, pty.master_fd):
+                yield
+        finally:
+            self.loop.remove_reader(pty.master_fd)
+
+    async def _handle_client(self, reader: StreamReader, writer: StreamWriter):
+        peer = writer.get_extra_info('peername')
+        print_to_ctty(f'Madbg - client connected from {peer}')
+        config_len = struct.unpack(MESSAGE_LENGTH_FMT, await reader.readexactly(MESSAGE_LENGTH_LENGTH))[0]
+        config: TTYConfig = pickle.loads(await reader.readexactly(config_len))
+        with PTY.open() as pty:
+            config.apply(pty.slave_fd)
+            while True:
+                with self._connect_pty(pty, reader, writer):
+                    choice = await create_app(pty.slave_reader, pty.slave_writer).run_async()
+                    import asyncio
+                    # TODO: race, not everything is flushed... Should we close the pty?? nahhh
+                    # TODO: WARNING: your terminal doesn't support cursor position requests (CPR).
+                    # TODO: stuck (might be a different problem, like how moving app to a thread earlier had helped)
+                    await asyncio.sleep(0.1)
+                if choice is None:
+                    break
+                session = await self.get_session(threading.main_thread())
+                await session.connect_client(reader, writer, config)
+        writer.close()
+        print_to_ctty(f'Client disconnected {peer}')
+
 
     async def _serve(self, addr: Any):
         assert isinstance(addr, tuple) and isinstance(addr[0], str) and isinstance(addr[1], int)
         ip, port = addr
         print_to_ctty(f'Listening for debugger clients on {ip}:{port}')
-        server = await start_server(self._client_connected, ip, port)
+        server = await start_server(self._handle_client, ip, port)
         await server.serve_forever()
 
     @classmethod
@@ -168,6 +194,7 @@ Next steps:
             can we at least verify the dest thread is blocked on a syscall? this is probable as we are holding
             the gil.
             do we have another approach?
+    - get rid of piping
     - use the new api for setting trace on other threads
     - user connects, gets main app - choose thread to debug
       to users can debug two separate threads at once
@@ -191,6 +218,23 @@ Next steps:
 
 python -c $'import madbg; madbg.start()\nwhile 1: print(__import__("time").sleep(1) or ":)")'
 python -c $'while 1: print(__import__("time").sleep(1) or ":)")'
+
+UI
+    There are three views:
+        1. Main debugger
+            - See all threads
+            - Choose a thread
+            - Quit
+        2. Thread view
+            - Start debugging
+            - See live stack trace
+            - Quit
+            - Go to main
+        3. Debugger
+            - Go to thread view (continue)
+            - Go to main (quit)
+
+
 - There is only one debugger with one session
 - A trace can start at any thread because of a set_trace(), or a client setting it
 - A trace can start when there is no client connected, but should print a warning to tty

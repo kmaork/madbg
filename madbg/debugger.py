@@ -51,7 +51,7 @@ class RemoteIPythonDebugger(TerminalPdb):
         """
         Private constructor, use get_instance.
         """
-        self.pty = PTY.open()
+        self.pty = PTY.new()
         # A patch until https://github.com/ipython/ipython/issues/11745 is solved
         TerminalInteractiveShell.simple_prompt = False
         self.term_input = Vt100Input(self.pty.slave_reader)
