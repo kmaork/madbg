@@ -158,14 +158,9 @@ class DebuggerServer:
 
 
 """
-app - show periodically updated stack traces
-deadlock detection support
-
 Next steps:
-    - revert safe injection diff in hypno
+    - sqlite errors
     - when writing ? in the terminal, "Object `` not found." is printed to stdout 
-    - no \r printed...
-    - continue raises exceptions
     - run in thread using ptrace - better than signal??
         signal: interfering with signal handlers
         ptrace: invoke subprocess, load dll
@@ -183,6 +178,8 @@ Next steps:
       the app could be configured with the first user's terminal, and connected through a raw pty to each
       user's pty
       so each thread has a pty, and each user has a pty
+    - app - show periodically updated stack traces
+    - deadlock detection support
     - pyinjector issues:
         - getting the python error back to us or at least know that it failed
         - threads

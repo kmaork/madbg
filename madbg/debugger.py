@@ -86,12 +86,13 @@ class RemoteIPythonDebugger(TerminalPdb):
         self.pty.close()
 
     def attach(self):
-
         def set():
-            f = currentframe().f_back.f_back
+            f = currentframe().f_back.f_back.f_back
             f.f_globals[self._DEBUGGING_GLOBAL] = True
             self.check_debugging_global = True
             self.set_trace(f)
+        # If this gets stuck, it's probably because the debugger kicks in before the injection finishes.
+        # The debugging global must be pushed to the right frame to prevent that.
         run_in_thread(self.thread, set)
 
     def notify_client_connect(self, tty_config: TTYConfig):
