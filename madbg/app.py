@@ -12,7 +12,8 @@ from prompt_toolkit.widgets import RadioList, Dialog, Label, Button
 
 
 def create_app(reader: TextIO, writer: TextIO, term_type: Optional[str]=None):
-    radio_list = RadioList([(t, t.name) for t in threading.enumerate()])
+    current_thread = threading.current_thread()
+    radio_list = RadioList([(t, t.name) for t in threading.enumerate() if t is not current_thread and t.is_alive()])
 
     dialog = Dialog(
         title='Choose thread to debug',
@@ -21,8 +22,8 @@ def create_app(reader: TextIO, writer: TextIO, term_type: Optional[str]=None):
             padding=1,
         ),
         buttons=[
-            Button(text='OK', handler=lambda: app.exit(result=radio_list.current_value)),
-            Button(text='Cancel', handler=lambda: app.exit(result=None)),
+            Button(text='Debug!', handler=lambda: app.exit(result=radio_list.current_value)),
+            Button(text='Exit', handler=lambda: app.exit(result=None)),
         ],
         with_background=True,
     )

@@ -156,7 +156,6 @@ class RemoteIPythonDebugger(TerminalPdb):
                 self._on_done()
 
     def _on_done(self):
-        print_to_ctty('Madbg - debugger stopped')
         for client in self.clients:
             client.on_detach()
         self.clients.clear()

@@ -196,7 +196,7 @@ class DebuggerServer:
             if state is None:
                 # TODO: receive addr as arg
                 cls.STATE.set(State(addr))
-                Thread(daemon=True, target=cls._run, args=(addr,)).start()
+                Thread(daemon=True, target=cls._run, args=(addr,), name='madbg').start()
             elif state.future.done():
                 # Raise the exception
                 state.future.result()
@@ -207,34 +207,15 @@ class DebuggerServer:
 
 
 """
-Attach and quit:
-
-Process ForkPoolWorker-3:
-Traceback (most recent call last):
-  File "/usr/lib/python3.11/multiprocessing/process.py", line 314, in _bootstrap
-    self.run()
-  File "/usr/lib/python3.11/multiprocessing/process.py", line 108, in run
-    self._target(*self._args, **self._kwargs)
-  File "/usr/lib/python3.11/multiprocessing/pool.py", line 125, in worker
-    result = (True, func(*args, **kwds))
-                    ^^^^^^^^^^^^^^^^^^^
-  File "/mnt/c/Users/kmaor/Documents/code/hypno/hypno/hypno.py", line 63, in inject_py
-    inject(pid, str(temp.name))
-  File "/mnt/c/Users/kmaor/Documents/code/pyinjector/pyinjector/pyinjector.py", line 103, in inject
-    return injector.inject(library_path)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/mnt/c/Users/kmaor/Documents/code/pyinjector/pyinjector/pyinjector.py", line 87, in inject
-    call_c_func(libinjector.injector_inject, self.injector_p, library_path, pointer(handle))
-  File "/mnt/c/Users/kmaor/Documents/code/pyinjector/pyinjector/pyinjector.py", line 62, in call_c_func
-    ret = func(*args)
-          ^^^^^^^^^^^
-KeyboardInterrupt
-Segmentation fault
-
-"""
-"""
 Next steps:
     - sqlite errors
+    - disconnect and then connect - OSError: [Errno 9] Bad file descriptor
+    - two client on two threads: RuntimeError: Task <Task pending name='Task-165' coro=<Application.run_async() running at /usr/local/lib/python3.11/dist-packages/prompt_toolkit/application/application.py:891> c
+b=[_run_until_complete_cb() at /usr/lib/python3.11/asyncio/base_events.py:180]> got Future <Task cancelling name='Task-182' coro=<KeyProcessor._start_timeout.<locals>.wait() runn
+ing at /usr/local/lib/python3.11/dist-packages/prompt_toolkit/key_binding/key_processor.py:397> wait_for=<Future cancelled>> attached to a different loop
+    - ctrl c on debugee during debug shows --KeyboardInterrupt--, means we do register sigint handler
+    - our own executors are showing up in the menu, hide them by keeping a list of them
+    - skip menu if there is only one thread?
     - when writing ? in the terminal, "Object `` not found." is printed to stdout 
     - run in thread using ptrace - better than signal??
         signal: interfering with signal handlers
