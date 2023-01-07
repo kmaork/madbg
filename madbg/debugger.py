@@ -121,14 +121,15 @@ class RemoteIPythonDebugger(TerminalPdb):
         self._run_running_app()
 
     def remove_client(self, client: Client):
-        self.clients.remove(client)
-        self._configure_tty()
-        if not self.clients:
-            # TODO: can we use self.stop_here (from ipython code) instead of the debugging global?
-            if self.pt_app.app.is_running:
-                self.pt_app.app.exit('quit')
-            if self.running_app.is_running:
-                self.running_app.exit()
+        if client in self.clients:
+            self.clients.remove(client)
+            self._configure_tty()
+            if not self.clients:
+                # TODO: can we use self.stop_here (from ipython code) instead of the debugging global?
+                if self.pt_app.app.is_running:
+                    self.pt_app.app.exit('quit')
+                if self.running_app.is_running:
+                    self.running_app.exit()
 
     def preloop(self):
         if not self.clients:

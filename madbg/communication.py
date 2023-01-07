@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 import os
 import struct
 from collections import defaultdict
-from asyncio import new_event_loop, StreamReader, wait, FIRST_COMPLETED, Event, get_running_loop
+from asyncio import new_event_loop, StreamReader, wait, FIRST_COMPLETED, Event, get_running_loop, StreamWriter
 from typing import Dict, Set, Optional
 
 MESSAGE_LENGTH_FMT = 'I'
@@ -15,34 +15,26 @@ CHUNK_SIZE = 2 ** 12
 PipeDict = Dict[int, Set[int]]
 
 
-async def read_into(reader: StreamReader, writer_fd: int, chunk_size=CHUNK_SIZE):
+async def read_into(reader: StreamReader, writer: StreamWriter, chunk_size=CHUNK_SIZE):
+    loop = get_running_loop()
     while True:
         if reader.at_eof():
             break
         data = await reader.read(chunk_size)
-        # TODO: Use async mechanism to make sure all data is written
-        os.write(writer_fd, data)
+        writer.write(data)
+        # TODO: bug in python
+        if hasattr(writer._protocol, '_drain_helper'):
+            loop.create_task(writer.drain())
 
 
-async def read_into_until_stopped(reader: StreamReader, writer_fd: int, done: Event):
+async def read_into_until_stopped(reader: StreamReader, writer: StreamWriter, done: Event):
     loop = get_running_loop()
     done_task = loop.create_task(done.wait())
-    read_task = loop.create_task(read_into(reader, writer_fd))
+    read_task = loop.create_task(read_into(reader, writer))
     finished, unfinished = await wait([done_task, read_task], return_when=FIRST_COMPLETED)
     if done_task in finished:
         for task in unfinished:
             task.cancel()
-
-
-@asynccontextmanager
-async def context_read_into(reader: StreamReader, writer_fd: int):
-    stop = Event()
-    task = get_running_loop().create_task(read_into_until_stopped(reader, writer_fd, stop))
-    try:
-        yield
-    finally:
-        stop.set()
-        await task
 
 
 def read_new_data(fd: int, chunk_size=CHUNK_SIZE) -> bytearray:

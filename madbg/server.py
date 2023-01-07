@@ -1,9 +1,9 @@
+from __future__ import annotations
 from functools import partial
 
 from traceback import format_exc
 from contextlib import asynccontextmanager
 
-import os
 import pickle
 import struct
 from asyncio import Protocol, StreamReader, StreamWriter, AbstractEventLoop, start_server, new_event_loop, Future, Event
@@ -14,7 +14,7 @@ from typing import Any, Set
 from .consts import Addr
 from .debugger import RemoteIPythonDebugger, Client
 from .tty_utils import print_to_ctty, PTY, TTYConfig
-from .communication import MESSAGE_LENGTH_FMT, MESSAGE_LENGTH_LENGTH, read_new_data, context_read_into, CHUNK_SIZE
+from .communication import MESSAGE_LENGTH_FMT, MESSAGE_LENGTH_LENGTH, CHUNK_SIZE, read_into_until_stopped
 from .utils import Locked
 from .app import create_app
 
@@ -55,16 +55,41 @@ class ClientMulticastProtocol(Protocol):
 
 @dataclass
 class AsyncPTY:
+    loop: AbstractEventLoop
     client_multicast: ClientMulticastProtocol
     master_writer_stream: StreamWriter
 
     @classmethod
-    async def create(cls, loop: AbstractEventLoop, pty: PTY):
+    async def create(cls, loop: AbstractEventLoop, pty: PTY) -> AsyncPTY:
         client_multicast = ClientMulticastProtocol(loop)
         await loop.connect_read_pipe(lambda: client_multicast, pty.master_reader)
         write_transport, write_protocol = await loop.connect_write_pipe(Protocol, pty.master_writer)
         master_writer_stream = StreamWriter(write_transport, write_protocol, None, loop)
-        return cls(client_multicast, master_writer_stream)
+        return cls(loop, client_multicast, master_writer_stream)
+
+    @asynccontextmanager
+    async def read_into(self, writer: StreamWriter):
+        self.client_multicast.add_client(writer)
+        try:
+            yield
+        finally:
+            self.client_multicast.remove_client(writer)
+            await writer.drain()
+
+    @asynccontextmanager
+    async def write_into(self, reader: StreamReader):
+        stop = Event()
+        task = self.loop.create_task(read_into_until_stopped(reader, self.master_writer_stream, stop))
+        try:
+            yield
+        finally:
+            stop.set()
+            await task
+
+    @asynccontextmanager
+    async def connect(self, reader: StreamReader, writer: StreamWriter):
+        async with self.read_into(writer), self.write_into(reader):
+            yield
 
 
 @dataclass
@@ -74,27 +99,17 @@ class Session:
     async_pty: AsyncPTY
 
     @classmethod
-    async def create(cls, loop: AbstractEventLoop, debugger: RemoteIPythonDebugger):
+    async def create(cls, loop: AbstractEventLoop, debugger: RemoteIPythonDebugger) -> Session:
         return cls(loop, debugger, await AsyncPTY.create(loop, debugger.pty))
 
     async def connect_client(self, reader: StreamReader, writer: StreamWriter, tty_config: TTYConfig):
-        self.async_pty.client_multicast.add_client(writer)
-        done = Event()
-        client = Client(tty_config, partial(self.loop.call_soon_threadsafe, done.set))
-        # TODO: make thread safe
-        self.debugger.add_client(client)
-
-        while True:
-            if reader.at_eof():
-                self.debugger.remove_client(client)
-                break
-            if done.is_set():
-                break
-            data = await reader.read(CHUNK_SIZE)
-            self.async_pty.master_writer_stream.write(data)
-            # TODO: what?
-            # loop.create_task(self.master_writer_stream.drain())
-        self.async_pty.client_multicast.remove_client(writer)
+        async with self.async_pty.connect(reader, writer):
+            done = Event()
+            client = Client(tty_config, partial(self.loop.call_soon_threadsafe, done.set))
+            # TODO: make thread safe
+            self.debugger.add_client(client)
+            await done.wait()
+            self.debugger.remove_client(client)
 
 
 @dataclass
@@ -111,37 +126,22 @@ class DebuggerServer:
             session = self.sessions[thread] = await Session.create(self.loop, debugger)
         return session
 
-    @asynccontextmanager
-    async def _connect_pty(self, pty: PTY, reader: StreamReader, writer: StreamWriter):
-        def bla():
-            writer.write(read_new_data(pty.master_fd))
-            self.loop.create_task(writer.drain())
-
-        self.loop.add_reader(pty.master_fd, bla)
-        try:
-            async with context_read_into(reader, pty.master_fd):
-                yield
-            await writer.drain()
-        finally:
-            self.loop.remove_reader(pty.master_fd)
-
     async def _handle_client(self, reader: StreamReader, writer: StreamWriter):
         peer = writer.get_extra_info('peername')
         print_to_ctty(f'Madbg - client connected from {peer}')
         config_len = struct.unpack(MESSAGE_LENGTH_FMT, await reader.readexactly(MESSAGE_LENGTH_LENGTH))[0]
         config: TTYConfig = pickle.loads(await reader.readexactly(config_len))
         with PTY.open() as pty:
-            config.apply(pty.slave_fd)
-            while True:
-                async with self._connect_pty(pty, reader, writer):
-                    choice = await create_app(pty.slave_reader, pty.slave_writer, config.term_type).run_async()
-                    import asyncio
-                    # TODO: race, not everything is flushed... Should we close the pty?? nahhh
-                    await asyncio.sleep(0.1)
-                if choice is None:
-                    break
-                session = await self.get_session(choice)
-                await session.connect_client(reader, writer, config)
+            async_pty = await AsyncPTY.create(self.loop, pty)
+            async with async_pty.read_into(writer):
+                config.apply(pty.slave_fd)
+                while True:
+                    async with async_pty.write_into(reader):
+                        choice = await create_app(pty.slave_reader, pty.slave_writer, config.term_type).run_async()
+                    if choice is None:
+                        break
+                    session = await self.get_session(choice)
+                    await session.connect_client(reader, writer, config)
         writer.close()
         print_to_ctty(f'Client disconnected {peer}')
 
