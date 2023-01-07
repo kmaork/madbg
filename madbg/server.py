@@ -14,7 +14,7 @@ from typing import Any, Set
 from .consts import Addr
 from .debugger import RemoteIPythonDebugger, Client
 from .tty_utils import print_to_ctty, PTY, TTYConfig
-from .communication import MESSAGE_LENGTH_FMT, MESSAGE_LENGTH_LENGTH, CHUNK_SIZE, read_into_until_stopped
+from .communication import MESSAGE_LENGTH_FMT, MESSAGE_LENGTH_LENGTH, read_into_until_stopped
 from .utils import Locked
 from .app import create_app
 
@@ -131,17 +131,18 @@ class DebuggerServer:
         print_to_ctty(f'Madbg - client connected from {peer}')
         config_len = struct.unpack(MESSAGE_LENGTH_FMT, await reader.readexactly(MESSAGE_LENGTH_LENGTH))[0]
         config: TTYConfig = pickle.loads(await reader.readexactly(config_len))
-        with PTY.open() as pty:
-            async_pty = await AsyncPTY.create(self.loop, pty)
-            async with async_pty.read_into(writer):
-                config.apply(pty.slave_fd)
-                while True:
-                    async with async_pty.write_into(reader):
-                        choice = await create_app(pty.slave_reader, pty.slave_writer, config.term_type).run_async()
-                    if choice is None:
-                        break
-                    session = await self.get_session(choice)
-                    await session.connect_client(reader, writer, config)
+        # Not using context manager because _UnixWritePipeTransport.__del__ closes its pipe
+        pty = PTY.new()
+        async_pty = await AsyncPTY.create(self.loop, pty)
+        async with async_pty.read_into(writer):
+            config.apply(pty.slave_fd)
+            while True:
+                async with async_pty.write_into(reader):
+                    choice = await create_app(pty.slave_reader, pty.slave_writer, config.term_type).run_async()
+                if choice is None:
+                    break
+                session = await self.get_session(choice)
+                await session.connect_client(reader, writer, config)
         writer.close()
         print_to_ctty(f'Client disconnected {peer}')
 
@@ -200,8 +201,8 @@ class DebuggerServer:
                 # Raise the exception
                 state.future.result()
             else:
+                # TODO
                 if addr != state.address:
-                    # TODO
                     raise RuntimeError('No support for double bind')
 
 
