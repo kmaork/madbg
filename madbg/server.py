@@ -19,7 +19,6 @@ from .utils import Locked
 from .app import create_app
 
 
-
 @dataclass
 class State:
     address: tuple
@@ -55,22 +54,31 @@ class ClientMulticastProtocol(Protocol):
 
 
 @dataclass
-class Session:
-    loop: AbstractEventLoop
-    debugger: RemoteIPythonDebugger
+class AsyncPTY:
     client_multicast: ClientMulticastProtocol
     master_writer_stream: StreamWriter
 
     @classmethod
-    async def create(cls, loop: AbstractEventLoop, debugger: RemoteIPythonDebugger):
+    async def create(cls, loop: AbstractEventLoop, pty: PTY):
         client_multicast = ClientMulticastProtocol(loop)
-        await loop.connect_read_pipe(lambda: client_multicast, debugger.pty.master_reader)
-        write_transport, write_protocol = await loop.connect_write_pipe(Protocol, debugger.pty.master_writer)
+        await loop.connect_read_pipe(lambda: client_multicast, pty.master_reader)
+        write_transport, write_protocol = await loop.connect_write_pipe(Protocol, pty.master_writer)
         master_writer_stream = StreamWriter(write_transport, write_protocol, None, loop)
-        return cls(loop, debugger, client_multicast, master_writer_stream)
+        return cls(client_multicast, master_writer_stream)
+
+
+@dataclass
+class Session:
+    loop: AbstractEventLoop
+    debugger: RemoteIPythonDebugger
+    async_pty: AsyncPTY
+
+    @classmethod
+    async def create(cls, loop: AbstractEventLoop, debugger: RemoteIPythonDebugger):
+        return cls(loop, debugger, await AsyncPTY.create(loop, debugger.pty))
 
     async def connect_client(self, reader: StreamReader, writer: StreamWriter, tty_config: TTYConfig):
-        self.client_multicast.add_client(writer)
+        self.async_pty.client_multicast.add_client(writer)
         done = Event()
         client = Client(tty_config, partial(self.loop.call_soon_threadsafe, done.set))
         # TODO: make thread safe
@@ -83,10 +91,11 @@ class Session:
             if done.is_set():
                 break
             data = await reader.read(CHUNK_SIZE)
-            self.master_writer_stream.write(data)
+            self.async_pty.master_writer_stream.write(data)
             # TODO: what?
             # loop.create_task(self.master_writer_stream.drain())
-        self.client_multicast.remove_client(writer)
+        self.async_pty.client_multicast.remove_client(writer)
+
 
 @dataclass
 class DebuggerServer:
@@ -107,6 +116,7 @@ class DebuggerServer:
         def bla():
             writer.write(read_new_data(pty.master_fd))
             self.loop.create_task(writer.drain())
+
         self.loop.add_reader(pty.master_fd, bla)
         try:
             async with context_read_into(reader, pty.master_fd):
@@ -134,7 +144,6 @@ class DebuggerServer:
                 await session.connect_client(reader, writer, config)
         writer.close()
         print_to_ctty(f'Client disconnected {peer}')
-
 
     async def _try_handle_client(self, reader: StreamReader, writer: StreamWriter):
         """
@@ -194,6 +203,7 @@ class DebuggerServer:
                 if addr != state.address:
                     # TODO
                     raise RuntimeError('No support for double bind')
+
 
 """
 Attach and quit:
