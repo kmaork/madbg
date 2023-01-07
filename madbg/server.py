@@ -1,23 +1,23 @@
-from contextlib import contextmanager
+from functools import partial
+
+from traceback import format_exc
+from contextlib import asynccontextmanager
 
 import os
 import pickle
 import struct
-import threading
-from asyncio import Protocol, StreamReader, StreamWriter, AbstractEventLoop, start_server, new_event_loop, Future
+from asyncio import Protocol, StreamReader, StreamWriter, AbstractEventLoop, start_server, new_event_loop, Future, Event
 from dataclasses import dataclass, field
 from threading import Thread
 from typing import Any, Set
 
 from .consts import Addr
-from .debugger import RemoteIPythonDebugger
+from .debugger import RemoteIPythonDebugger, Client
 from .tty_utils import print_to_ctty, PTY, TTYConfig
-from .communication import MESSAGE_LENGTH_FMT, MESSAGE_LENGTH_LENGTH, read_new_data, context_read_into
+from .communication import MESSAGE_LENGTH_FMT, MESSAGE_LENGTH_LENGTH, read_new_data, context_read_into, CHUNK_SIZE
 from .utils import Locked
 from .app import create_app
 
-CTRL_D = bytes([4])
-CHUNK_SIZE = 2 ** 12
 
 
 @dataclass
@@ -63,35 +63,29 @@ class Session:
 
     @classmethod
     async def create(cls, loop: AbstractEventLoop, debugger: RemoteIPythonDebugger):
-        master_reader = os.fdopen(debugger.pty.master_fd, 'rb')
-        master_writer = os.fdopen(debugger.pty.master_fd, 'wb')
         client_multicast = ClientMulticastProtocol(loop)
-        await loop.connect_read_pipe(lambda: client_multicast, master_reader)
-        write_transport, write_protocol = await loop.connect_write_pipe(Protocol, master_writer)
+        await loop.connect_read_pipe(lambda: client_multicast, debugger.pty.master_reader)
+        write_transport, write_protocol = await loop.connect_write_pipe(Protocol, debugger.pty.master_writer)
         master_writer_stream = StreamWriter(write_transport, write_protocol, None, loop)
         return cls(loop, debugger, client_multicast, master_writer_stream)
 
     async def connect_client(self, reader: StreamReader, writer: StreamWriter, tty_config: TTYConfig):
         self.client_multicast.add_client(writer)
+        done = Event()
+        client = Client(tty_config, partial(self.loop.call_soon_threadsafe, done.set))
         # TODO: make thread safe
-        self.debugger.notify_client_connect(tty_config)
+        self.debugger.add_client(client)
 
-        @self.debugger.done_callbacks.add
-        def one_debugger_done():
-            self.loop.call_soon_threadsafe(reader.feed_eof)
-
-        while not reader.at_eof():
+        while True:
+            if reader.at_eof():
+                self.debugger.remove_client(client)
+                break
+            if done.is_set():
+                break
             data = await reader.read(CHUNK_SIZE)
-            detach_cmd_i = data.find(CTRL_D)
-            if detach_cmd_i != -1:
-                data = data[:detach_cmd_i]
             self.master_writer_stream.write(data)
             # TODO: what?
             # loop.create_task(self.master_writer_stream.drain())
-            if detach_cmd_i != -1:
-                writer.write(b'\r\nDetaching\r\n')
-                break
-        self.debugger.notify_client_disconnect()
         self.client_multicast.remove_client(writer)
 
 @dataclass
@@ -108,15 +102,16 @@ class DebuggerServer:
             session = self.sessions[thread] = await Session.create(self.loop, debugger)
         return session
 
-    @contextmanager
-    def _connect_pty(self, pty: PTY, reader: StreamReader, writer: StreamWriter):
+    @asynccontextmanager
+    async def _connect_pty(self, pty: PTY, reader: StreamReader, writer: StreamWriter):
         def bla():
             writer.write(read_new_data(pty.master_fd))
             self.loop.create_task(writer.drain())
         self.loop.add_reader(pty.master_fd, bla)
         try:
-            with context_read_into(reader, pty.master_fd):
+            async with context_read_into(reader, pty.master_fd):
                 yield
+            await writer.drain()
         finally:
             self.loop.remove_reader(pty.master_fd)
 
@@ -128,26 +123,43 @@ class DebuggerServer:
         with PTY.open() as pty:
             config.apply(pty.slave_fd)
             while True:
-                with self._connect_pty(pty, reader, writer):
-                    choice = await create_app(pty.slave_reader, pty.slave_writer).run_async()
+                async with self._connect_pty(pty, reader, writer):
+                    choice = await create_app(pty.slave_reader, pty.slave_writer, config.term_type).run_async()
                     import asyncio
                     # TODO: race, not everything is flushed... Should we close the pty?? nahhh
-                    # TODO: WARNING: your terminal doesn't support cursor position requests (CPR).
-                    # TODO: stuck (might be a different problem, like how moving app to a thread earlier had helped)
                     await asyncio.sleep(0.1)
                 if choice is None:
                     break
-                session = await self.get_session(threading.main_thread())
+                session = await self.get_session(choice)
                 await session.connect_client(reader, writer, config)
         writer.close()
         print_to_ctty(f'Client disconnected {peer}')
 
 
+    async def _try_handle_client(self, reader: StreamReader, writer: StreamWriter):
+        """
+        # TODO
+        Tried:
+
+        def exception_handler(loop, context):
+            print("exception occured, closing server")
+            loop.default_exception_handler(context)
+            server.close()
+        self.loop.set_exception_handler(exception_handler)
+
+        but it didn't work
+        """
+        try:
+            await self._handle_client(reader, writer)
+        except:
+            print_to_ctty(f'Madbg - error handling client:\n{format_exc()}')
+            raise
+
     async def _serve(self, addr: Any):
         assert isinstance(addr, tuple) and isinstance(addr[0], str) and isinstance(addr[1], int)
         ip, port = addr
         print_to_ctty(f'Listening for debugger clients on {ip}:{port}')
-        server = await start_server(self._handle_client, ip, port)
+        server = await start_server(self._try_handle_client, ip, port)
         await server.serve_forever()
 
     @classmethod
@@ -158,6 +170,7 @@ class DebuggerServer:
         except Exception as e:
             with cls.STATE as state:
                 state.set_exception(e)
+            print('c')
             raise
 
     @classmethod
@@ -182,7 +195,32 @@ class DebuggerServer:
                     # TODO
                     raise RuntimeError('No support for double bind')
 
+"""
+Attach and quit:
 
+Process ForkPoolWorker-3:
+Traceback (most recent call last):
+  File "/usr/lib/python3.11/multiprocessing/process.py", line 314, in _bootstrap
+    self.run()
+  File "/usr/lib/python3.11/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+  File "/usr/lib/python3.11/multiprocessing/pool.py", line 125, in worker
+    result = (True, func(*args, **kwds))
+                    ^^^^^^^^^^^^^^^^^^^
+  File "/mnt/c/Users/kmaor/Documents/code/hypno/hypno/hypno.py", line 63, in inject_py
+    inject(pid, str(temp.name))
+  File "/mnt/c/Users/kmaor/Documents/code/pyinjector/pyinjector/pyinjector.py", line 103, in inject
+    return injector.inject(library_path)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/c/Users/kmaor/Documents/code/pyinjector/pyinjector/pyinjector.py", line 87, in inject
+    call_c_func(libinjector.injector_inject, self.injector_p, library_path, pointer(handle))
+  File "/mnt/c/Users/kmaor/Documents/code/pyinjector/pyinjector/pyinjector.py", line 62, in call_c_func
+    ret = func(*args)
+          ^^^^^^^^^^^
+KeyboardInterrupt
+Segmentation fault
+
+"""
 """
 Next steps:
     - sqlite errors
@@ -233,6 +271,10 @@ UI
         3. Debugger
             - Go to thread view (continue)
             - Go to main (quit)
+    Local mode:
+        madbg run bla
+        or madbg.start_here()
+        will open the UI in the current terminal
 
 
 - There is only one debugger with one session

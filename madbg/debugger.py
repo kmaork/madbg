@@ -1,4 +1,7 @@
 from __future__ import annotations
+
+from dataclasses import dataclass
+
 import runpy
 import os
 import sys
@@ -7,7 +10,7 @@ from bdb import BdbQuit
 from contextlib import contextmanager, nullcontext
 from inspect import currentframe
 from threading import Thread
-from typing import ContextManager
+from typing import ContextManager, Callable, Any
 from hypno import run_in_thread
 from prompt_toolkit import Application
 from prompt_toolkit.formatted_text import PygmentsTokens
@@ -33,7 +36,7 @@ def get_running_app(debugger):
         debugger.attach()
 
     pt_app = Application(
-        layout=Layout(Label('Press Ctrl-C to resume debugging')),
+        layout=Layout(Label('Press Ctrl-C to attach')),
         key_bindings=kb,
         input=debugger.term_input,
         output=debugger.term_output,
@@ -42,10 +45,21 @@ def get_running_app(debugger):
     return pt_app
 
 
+@dataclass
+class Client:
+    config: TTYConfig
+    on_detach: Callable[[], Any]
+
+    def __hash__(self):
+        return id(self)
+
+    def __eq__(self, other):
+        return self is other
+
+
 class RemoteIPythonDebugger(TerminalPdb):
     _DEBUGGING_GLOBAL = 'DEBUGGING_WITH_MADBG'
     _INSTANCES = {}
-
 
     def __init__(self, thread: Thread, loop: AbstractEventLoop):
         """
@@ -60,8 +74,7 @@ class RemoteIPythonDebugger(TerminalPdb):
                                                  message=self._get_prompt),
                          stdin=self.pty.slave_reader, stdout=self.pty.slave_writer, nosigint=True)
         self.use_rawinput = True
-        self.num_clients = 0
-        self.done_callbacks = set()
+        self.clients: set[Client] = set()
         # TODO: this should be intercepted on the client side to allow force quitting the client
         self.pt_app.key_bindings.remove("c-\\")
         self.thread = thread
@@ -95,17 +108,22 @@ class RemoteIPythonDebugger(TerminalPdb):
         # The debugging global must be pushed to the right frame to prevent that.
         run_in_thread(self.thread, set)
 
-    def notify_client_connect(self, tty_config: TTYConfig):
-        self.num_clients += 1
-        if self.num_clients == 1:
+    def _configure_tty(self):
+        if len(self.clients) == 1:
+            tty_config = next(iter(self.clients)).config
             tty_config.apply(self.pty.slave_fd)
             self.term_output.term = tty_config.term_type
-            if self.num_clients == 1:
-                self.attach()
+            self.term_input.term = tty_config.term_type
 
-    def notify_client_disconnect(self):
-        self.num_clients -= 1
-        if self.num_clients == 0:
+    def add_client(self, client: Client):
+        self.clients.add(client)
+        self._configure_tty()
+        self._run_running_app()
+
+    def remove_client(self, client: Client):
+        self.clients.remove(client)
+        self._configure_tty()
+        if not self.clients:
             # TODO: can we use self.stop_here (from ipython code) instead of the debugging global?
             if self.pt_app.app.is_running:
                 self.pt_app.app.exit('quit')
@@ -113,7 +131,7 @@ class RemoteIPythonDebugger(TerminalPdb):
                 self.running_app.exit()
 
     def preloop(self):
-        if self.num_clients == 0:
+        if not self.clients:
             print_to_ctty("Waiting for client to connect")
 
     def trace_dispatch(self, frame, event, arg):
@@ -137,20 +155,16 @@ class RemoteIPythonDebugger(TerminalPdb):
                 self._on_done()
 
     def _on_done(self):
-        print_to_ctty('Debugger stopped')
-        for callback in self.done_callbacks:
-            callback()
-        self.done_callbacks.clear()
+        print_to_ctty('Madbg - debugger stopped')
+        for client in self.clients:
+            client.on_detach()
+        self.clients.clear()
 
-    async def lol(self, a):
-        print(11111)
-        await a
-        print(222222)
+    def _run_running_app(self):
+        self.thread_executor.submit(self.running_app.run)
 
     def do_continue(self, arg):
-        # TODO: still got the history (c-r) - do we maybe want app run and not app prompt?
-        self.thread_executor.submit(self.running_app.run)
-        # self.loop.call_soon_threadsafe(lambda: self.loop.create_task(self.lol(self.running_app.run_async())))
+        self._run_running_app()
         # This doesn't register a SIGINT handler as we set self.nosigint to True
         return super().do_continue(arg)
 

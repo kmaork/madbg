@@ -1,5 +1,5 @@
 import sys
-from typing import TextIO
+from typing import TextIO, Optional
 import threading
 
 from prompt_toolkit import Application
@@ -11,7 +11,7 @@ from prompt_toolkit.output.vt100 import Vt100_Output
 from prompt_toolkit.widgets import RadioList, Dialog, Label, Button
 
 
-def create_app(reader: TextIO, writer: TextIO):
+def create_app(reader: TextIO, writer: TextIO, term_type: Optional[str]=None):
     radio_list = RadioList([(t, t.name) for t in threading.enumerate()])
 
     dialog = Dialog(
@@ -30,14 +30,17 @@ def create_app(reader: TextIO, writer: TextIO):
     bindings = KeyBindings()
     bindings.add("tab")(focus_next)
     bindings.add("s-tab")(focus_previous)
-
+    term_input = Vt100Input(reader)
+    term_output = Vt100_Output.from_pty(writer)
+    term_input.term = term_type
+    term_output.term = term_type
     app = Application(
         layout=Layout(dialog),
         key_bindings=bindings,
         mouse_support=True,
         full_screen=True,
-        input=Vt100Input(reader),
-        output=Vt100_Output.from_pty(writer),
+        input=term_input,
+        output=term_output,
     )
     return app
 
