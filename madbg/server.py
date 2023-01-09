@@ -1,5 +1,6 @@
 from __future__ import annotations
 from functools import partial
+from prompt_toolkit.application import create_app_session
 
 from traceback import format_exc
 from contextlib import asynccontextmanager, AsyncExitStack
@@ -148,9 +149,20 @@ class DebuggerServer:
             config.apply(async_pty.pty.slave_fd)
             while True:
                 async with async_pty.write_into(reader):
-                    choice = await create_app(async_pty.pty.slave_io,
-                                              async_pty.pty.slave_io,
-                                              config.term_type).run_async()
+                    """
+                    Without this we get mixups between different running apps, and only one could run at a time.
+                    According to prompt_toolkit docs at https://github.com/prompt-toolkit/python-prompt-toolkit/blob/
+                    6b4af4e1c8763f2f3ccb2938605a44f57a1b8b5f/src/prompt_toolkit/application/application.py#L179:
+                    
+                    (Note that the preferred way to change the input/output is by creating an
+                    `AppSession` with the required input/output objects. If you need multiple
+                    applications running at the same time, you have to create a separate
+                    `AppSession` using a `with create_app_session():` block.
+                    """
+                    with create_app_session():
+                        choice = await create_app(async_pty.pty.slave_io,
+                                                  async_pty.pty.slave_io,
+                                                  config.term_type).run_async()
                 if choice is None:
                     break
                 session = await self.get_session(choice)
@@ -222,12 +234,11 @@ class DebuggerServer:
 
 """
 Next steps:
-    - can't debug anymore...
-    - open two clients, exit one - the other exits...
+    - release pyinjector and hypno versions
+    - no cleanup on client exit? how come when we stop the server c-\ when client is in fullscreen, terminal goes dead?
+    - ipython prs - do we need to patch? or maybe depend on a fork?
+    - trying to attach to two threads in parallel (two threads asleep, c-c to both) - one gets stuck.
     - all of our threads should be daemons so they let the app exit - after debugger is conncted, need two c-c
-    - two client on two threads: RuntimeError: Task <Task pending name='Task-165' coro=<Application.run_async() running at /usr/local/lib/python3.11/dist-packages/prompt_toolkit/application/application.py:891> c
-b=[_run_until_complete_cb() at /usr/lib/python3.11/asyncio/base_events.py:180]> got Future <Task cancelling name='Task-182' coro=<KeyProcessor._start_timeout.<locals>.wait() runn
-ing at /usr/local/lib/python3.11/dist-packages/prompt_toolkit/key_binding/key_processor.py:397> wait_for=<Future cancelled>> attached to a different loop
     - ctrl c on debugee during debug shows --KeyboardInterrupt--, means we do register sigint handler
     - our own executors are showing up in the menu, hide them by keeping a list of them
     - skip menu if there is only one thread?

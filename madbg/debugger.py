@@ -5,10 +5,10 @@ from dataclasses import dataclass
 import runpy
 import os
 import sys
-from asyncio import AbstractEventLoop
 from bdb import BdbQuit
 from contextlib import contextmanager, nullcontext
 from inspect import currentframe
+from prompt_toolkit.application import create_app_session
 from threading import Thread
 from typing import ContextManager, Callable, Any
 from hypno import run_in_thread
@@ -87,6 +87,7 @@ class RemoteIPythonDebugger(TerminalPdb):
             f.f_globals[self._DEBUGGING_GLOBAL] = True
             self.check_debugging_global = True
             self.set_trace(f)
+
         # If this gets stuck, it's probably because the debugger kicks in before the injection finishes.
         # The debugging global must be pushed to the right frame to prevent that.
         run_in_thread(self.thread, set)
@@ -143,8 +144,12 @@ class RemoteIPythonDebugger(TerminalPdb):
             client.on_detach()
         self.clients.clear()
 
-    def _run_running_app(self):
-        self.thread_executor.submit(self.running_app.run)
+    def _run_running_app(self, in_new_thread=True):
+        if in_new_thread:
+            self.thread_executor.submit(self._run_running_app, in_new_thread=False)
+        else:
+            with create_app_session():
+                self.running_app.run()
 
     def do_continue(self, arg):
         self._run_running_app()

@@ -11,7 +11,7 @@ from prompt_toolkit.output.vt100 import Vt100_Output
 from prompt_toolkit.widgets import RadioList, Dialog, Label, Button
 
 
-def create_app(reader: TextIO, writer: TextIO, term_type: Optional[str]=None):
+def create_app(reader: TextIO, writer: TextIO, term_type: Optional[str] = None):
     current_thread = threading.current_thread()
     radio_list = RadioList([(t, t.name) for t in threading.enumerate() if t is not current_thread and t.is_alive()])
 
@@ -49,5 +49,6 @@ def create_app(reader: TextIO, writer: TextIO, term_type: Optional[str]=None):
 if __name__ == '__main__':
     from threading import Thread
     from time import sleep
+
     Thread(target=sleep, args=(10,), daemon=True, name='Sleeper').start()
     print(create_app(sys.stdin, sys.stdout).run())
