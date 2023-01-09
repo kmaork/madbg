@@ -19,4 +19,7 @@ def b():
 
 
 Thread(target=b, name='SecondThread', daemon=True).start()
-a()
+try:
+    a()
+except KeyboardInterrupt:
+    pass

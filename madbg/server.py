@@ -2,7 +2,7 @@ from __future__ import annotations
 from functools import partial
 
 from traceback import format_exc
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, AsyncExitStack
 
 import pickle
 import struct
@@ -56,16 +56,24 @@ class ClientMulticastProtocol(Protocol):
 @dataclass
 class AsyncPTY:
     loop: AbstractEventLoop
+    pty: PTY
     client_multicast: ClientMulticastProtocol
     master_writer_stream: StreamWriter
 
     @classmethod
-    async def create(cls, loop: AbstractEventLoop, pty: PTY) -> AsyncPTY:
-        client_multicast = ClientMulticastProtocol(loop)
-        await loop.connect_read_pipe(lambda: client_multicast, pty.master_reader)
-        write_transport, write_protocol = await loop.connect_write_pipe(Protocol, pty.master_writer)
-        master_writer_stream = StreamWriter(write_transport, write_protocol, None, loop)
-        return cls(loop, client_multicast, master_writer_stream)
+    @asynccontextmanager
+    async def open(cls, loop: AbstractEventLoop) -> AsyncPTY:
+        with PTY.open() as pty:
+            protocol_factory = partial(ClientMulticastProtocol, loop)
+            read_transport, client_multicast = await loop.connect_read_pipe(protocol_factory, pty.master_io)
+            write_transport, write_protocol = await loop.connect_write_pipe(Protocol, pty.master_io)
+            master_writer_stream = StreamWriter(write_transport, write_protocol, None, loop)
+            try:
+                yield cls(loop, pty, client_multicast, master_writer_stream)
+            finally:
+                # Invoke the destructors that close the pipes
+                read_transport.close()
+                write_transport.close()
 
     @asynccontextmanager
     async def read_into(self, writer: StreamWriter):
@@ -99,8 +107,11 @@ class Session:
     async_pty: AsyncPTY
 
     @classmethod
-    async def create(cls, loop: AbstractEventLoop, debugger: RemoteIPythonDebugger) -> Session:
-        return cls(loop, debugger, await AsyncPTY.create(loop, debugger.pty))
+    @asynccontextmanager
+    async def create(cls, loop: AbstractEventLoop, thread: Thread) -> Session:
+        async with AsyncPTY.open(loop) as async_pty:
+            debugger = RemoteIPythonDebugger(thread, async_pty.pty)
+            yield cls(loop, debugger, async_pty)
 
     async def connect_client(self, reader: StreamReader, writer: StreamWriter, tty_config: TTYConfig):
         async with self.async_pty.connect(reader, writer):
@@ -118,12 +129,13 @@ class DebuggerServer:
 
     loop: AbstractEventLoop
     sessions: dict[Thread, Session] = field(default_factory=dict)
+    exit_stack: AsyncExitStack = field(default_factory=AsyncExitStack)
 
     async def get_session(self, thread: Thread) -> Session:
         session = self.sessions.get(thread)
         if session is None:
-            debugger = RemoteIPythonDebugger.get_instance(thread, self.loop)
-            session = self.sessions[thread] = await Session.create(self.loop, debugger)
+            session_cm = Session.create(self.loop, thread)
+            session = self.sessions[thread] = await self.exit_stack.enter_async_context(session_cm)
         return session
 
     async def _handle_client(self, reader: StreamReader, writer: StreamWriter):
@@ -132,13 +144,13 @@ class DebuggerServer:
         config_len = struct.unpack(MESSAGE_LENGTH_FMT, await reader.readexactly(MESSAGE_LENGTH_LENGTH))[0]
         config: TTYConfig = pickle.loads(await reader.readexactly(config_len))
         # Not using context manager because _UnixWritePipeTransport.__del__ closes its pipe
-        pty = PTY.new()
-        async_pty = await AsyncPTY.create(self.loop, pty)
-        async with async_pty.read_into(writer):
-            config.apply(pty.slave_fd)
+        async with AsyncPTY.open(self.loop) as async_pty, async_pty.read_into(writer):
+            config.apply(async_pty.pty.slave_fd)
             while True:
                 async with async_pty.write_into(reader):
-                    choice = await create_app(pty.slave_reader, pty.slave_writer, config.term_type).run_async()
+                    choice = await create_app(async_pty.pty.slave_io,
+                                              async_pty.pty.slave_io,
+                                              config.term_type).run_async()
                 if choice is None:
                     break
                 session = await self.get_session(choice)
@@ -163,6 +175,7 @@ class DebuggerServer:
             await self._handle_client(reader, writer)
         except:
             print_to_ctty(f'Madbg - error handling client:\n{format_exc()}')
+            writer.close()
             raise
 
     async def _serve(self, addr: Any):
@@ -180,8 +193,9 @@ class DebuggerServer:
         except Exception as e:
             with cls.STATE as state:
                 state.set_exception(e)
-            print('c')
             raise
+        finally:
+            await self.exit_stack.aclose()
 
     @classmethod
     def _run(cls, addr: Any):
@@ -208,8 +222,9 @@ class DebuggerServer:
 
 """
 Next steps:
-    - sqlite errors
-    - disconnect and then connect - OSError: [Errno 9] Bad file descriptor
+    - can't debug anymore...
+    - open two clients, exit one - the other exits...
+    - all of our threads should be daemons so they let the app exit - after debugger is conncted, need two c-c
     - two client on two threads: RuntimeError: Task <Task pending name='Task-165' coro=<Application.run_async() running at /usr/local/lib/python3.11/dist-packages/prompt_toolkit/application/application.py:891> c
 b=[_run_until_complete_cb() at /usr/lib/python3.11/asyncio/base_events.py:180]> got Future <Task cancelling name='Task-182' coro=<KeyProcessor._start_timeout.<locals>.wait() runn
 ing at /usr/local/lib/python3.11/dist-packages/prompt_toolkit/key_binding/key_processor.py:397> wait_for=<Future cancelled>> attached to a different loop
@@ -245,9 +260,6 @@ ing at /usr/local/lib/python3.11/dist-packages/prompt_toolkit/key_binding/key_pr
     - support processes without tty
     - support mac n windows
 
-
-python -c $'import madbg; madbg.start()\nwhile 1: print(__import__("time").sleep(1) or ":)")'
-python -c $'while 1: print(__import__("time").sleep(1) or ":)")'
 
 UI
     There are three views:

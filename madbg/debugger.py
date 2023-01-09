@@ -59,44 +59,27 @@ class Client:
 
 class RemoteIPythonDebugger(TerminalPdb):
     _DEBUGGING_GLOBAL = 'DEBUGGING_WITH_MADBG'
-    _INSTANCES = {}
 
-    def __init__(self, thread: Thread, loop: AbstractEventLoop):
-        """
-        Private constructor, use get_instance.
-        """
-        self.pty = PTY.new()
+    def __init__(self, thread: Thread, pty: PTY):
+        self.pty = pty
         # A patch until https://github.com/ipython/ipython/issues/11745 is solved
         TerminalInteractiveShell.simple_prompt = False
-        self.term_input = Vt100Input(self.pty.slave_reader)
-        self.term_output = Vt100_Output.from_pty(self.pty.slave_writer)
+        self.term_input = Vt100Input(self.pty.slave_io)
+        self.term_output = Vt100_Output.from_pty(self.pty.slave_io)
         super().__init__(pt_session_options=dict(input=self.term_input, output=self.term_output,
                                                  message=self._get_prompt),
-                         stdin=self.pty.slave_reader, stdout=self.pty.slave_writer, nosigint=True)
+                         stdin=self.pty.slave_io, stdout=self.pty.slave_io, nosigint=True)
         self.use_rawinput = True
         self.clients: set[Client] = set()
         # TODO: this should be intercepted on the client side to allow force quitting the client
         self.pt_app.key_bindings.remove("c-\\")
         self.thread = thread
-        self.loop = loop
         # todo: run main debugger prompt in our loop
         self.running_app = get_running_app(self)
         self.check_debugging_global = False
 
-    @classmethod
-    def get_instance(cls, thread: Thread, loop: AbstractEventLoop):
-        instance = cls._INSTANCES.get(thread)
-        if instance is None:
-            instance = cls(thread, loop)
-            cls._INSTANCES[thread] = instance
-        return instance
-
     def _get_prompt(self):
         return PygmentsTokens([(Token.Prompt, f'{self.thread.name}> ')])
-
-    def __del__(self):
-        print('Closing connection', file=self.pty.slave_writer, flush=True)
-        self.pty.close()
 
     def attach(self):
         def set():
@@ -144,7 +127,7 @@ class RemoteIPythonDebugger(TerminalPdb):
                 self.check_debugging_global = False
                 del frame.f_globals[self._DEBUGGING_GLOBAL]
             else:
-                return None
+                return self.trace_dispatch
         bdb_quit = False
         try:
             s = super().trace_dispatch(frame, event, arg)

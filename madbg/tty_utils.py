@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from io import TextIOWrapper
+
 from contextlib import contextmanager
 
 import errno
@@ -11,7 +13,7 @@ from dataclasses import dataclass
 import fcntl
 import termios
 from functools import cached_property
-from typing import Tuple, ContextManager
+from typing import Tuple, ContextManager, TextIO
 
 
 @dataclass
@@ -52,25 +54,23 @@ class PTY:
     _closed: bool = False
 
     @cached_property
-    def slave_reader(self):
-        return os.fdopen(self.slave_fd, 'r')
+    def slave_io(self) -> TextIO:
+        # The only way to open a non-seekable fd for both reading and writing is with buffering=0
+        # Can only open in binary mode when buffering=0
+        # If there's any issue with that, we can always revert back to having slave_reader and slave_writer.
+        # Adding TextIOWrapper until refactor
+        # TODO: return BinaryIO? change usages
+        return TextIOWrapper(os.fdopen(self.slave_fd, 'r+b', buffering=0, closefd=False), write_through=True)
 
     @cached_property
-    def slave_writer(self):
-        return os.fdopen(self.slave_fd, 'w')
-
-    @cached_property
-    def master_reader(self):
-        return os.fdopen(self.master_fd, 'r')
-
-    @cached_property
-    def master_writer(self):
-        return os.fdopen(self.master_fd, 'w')
+    def master_io(self) -> TextIO:
+        return TextIOWrapper(os.fdopen(self.master_fd, 'r+b', buffering=0, closefd=False), write_through=True)
 
     def close(self):
         if not self._closed:
             termios.tcdrain(self.slave_fd)
             os.close(self.master_fd)
+            os.close(self.slave_fd)
             self._closed = True
 
     def set_raw(self):
@@ -85,8 +85,10 @@ class PTY:
     @contextmanager
     def open(cls) -> ContextManager[PTY]:
         open_pty = cls.new()
-        yield open_pty
-        open_pty.close()
+        try:
+            yield open_pty
+        finally:
+            open_pty.close()
 
 
 def print_to_ctty(*args):

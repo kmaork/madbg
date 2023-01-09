@@ -13,15 +13,15 @@ PipeDict = Dict[int, Set[int]]
 
 
 async def read_into(reader: StreamReader, writer: StreamWriter, chunk_size=CHUNK_SIZE):
-    loop = get_running_loop()
     while True:
         if reader.at_eof():
+            # TODO: raise EOFError()
             break
         data = await reader.read(chunk_size)
         writer.write(data)
         # TODO: bug in python
         if hasattr(writer._protocol, '_drain_helper'):
-            loop.create_task(writer.drain())
+            await writer.drain()
 
 
 async def read_into_until_stopped(reader: StreamReader, writer: StreamWriter, done: Event):
