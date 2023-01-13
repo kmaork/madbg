@@ -11,9 +11,10 @@ from prompt_toolkit.output.vt100 import Vt100_Output
 from prompt_toolkit.widgets import RadioList, Dialog, Label, Button
 
 
-def create_app(reader: TextIO, writer: TextIO, term_type: Optional[str] = None):
-    current_thread = threading.current_thread()
-    radio_list = RadioList([(t, t.name) for t in threading.enumerate() if t is not current_thread and t.is_alive()])
+def create_app(reader: TextIO, writer: TextIO, term_type: Optional[str] = None, threads_blacklist=None):
+    if threads_blacklist is None:
+        threads_blacklist = set()
+    radio_list = RadioList([(t, t.name) for t in threading.enumerate() if t not in threads_blacklist and t.is_alive()])
 
     dialog = Dialog(
         title='Choose thread to debug',

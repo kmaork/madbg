@@ -10,7 +10,7 @@ import pickle
 import struct
 from asyncio import Protocol, StreamReader, StreamWriter, AbstractEventLoop, start_server, new_event_loop, Future, Event
 from dataclasses import dataclass, field
-from threading import Thread
+from threading import Thread, current_thread
 from typing import Any, Set, Optional
 
 from .consts import Addr
@@ -130,9 +130,10 @@ class DebuggerServer:
     STATE = Locked(None)
 
     loop: AbstractEventLoop
+    thread: Thread
     sessions: dict[Thread, Session] = field(default_factory=dict)
     exit_stack: AsyncExitStack = field(default_factory=AsyncExitStack)
-    executor: ThreadPoolExecutor = field(default_factory=ThreadPoolExecutor)
+    executor: ThreadPoolExecutor = field(default_factory=lambda: ThreadPoolExecutor(64))
 
     def __post_init__(self):
         self.exit_stack.push(self.executor)
@@ -143,6 +144,25 @@ class DebuggerServer:
             session_cm = Session.create(self.loop, thread)
             session = self.sessions[thread] = await self.exit_stack.enter_async_context(session_cm)
         return session
+
+    def _get_madbg_threads(self):
+        threads = {self.thread}
+        try:
+            with self.executor._shutdown_lock:
+                threads.update(self.executor._threads)
+        except AttributeError:
+            raise
+        try:
+            for session in self.sessions.values():
+                with session.debugger.thread_executor._shutdown_lock:
+                    threads.update(session.debugger.thread_executor._threads)
+        except AttributeError:
+            raise
+        try:
+            threads.update(s.debugger.shell.history_manager.save_thread for s in self.sessions.values())
+        except AttributeError:
+            raise
+        return threads
 
     def _run_app(self, async_pty: AsyncPTY, config: TTYConfig) -> Optional[Thread]:
         """
@@ -156,9 +176,11 @@ class DebuggerServer:
         `AppSession` using a `with create_app_session():` block.
         """
         with create_app_session():
+            threads_blacklist = self._get_madbg_threads()
             return create_app(async_pty.pty.slave_io,
                               async_pty.pty.slave_io,
-                              config.term_type).run()
+                              config.term_type,
+                              threads_blacklist).run()
 
     async def _handle_client(self, reader: StreamReader, writer: StreamWriter):
         peer = writer.get_extra_info('peername')
@@ -208,7 +230,7 @@ class DebuggerServer:
 
     @classmethod
     async def _async_run(cls, loop: AbstractEventLoop, addr: Any):
-        self = cls(loop)
+        self = cls(loop, current_thread())
         try:
             await self._serve(addr)
         except Exception as e:
