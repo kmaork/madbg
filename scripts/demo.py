@@ -5,7 +5,7 @@ import time
 import madbg
 
 
-faulthandler.register(signum=signal.SIGINT)
+faulthandler.register(signum=signal.SIGQUIT)
 madbg.start()
 
 

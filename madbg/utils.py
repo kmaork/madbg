@@ -2,8 +2,9 @@ import sys
 from threading import RLock
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Generic, TypeVar
 
+T = TypeVar('T')
 
 @contextmanager
 def preserve_sys_state():
@@ -46,14 +47,14 @@ class BoundHandlers:
         return ((key, func.__get__(self.instance, self.owner)) for key, func in self.handlers.keys_to_funcs.items())
 
 
-class Locked:
-    def __init__(self, value: Any, lock: RLock = None):
+class Locked(Generic[T]):
+    def __init__(self, value: T, lock: RLock = None):
         if lock is None:
             lock = RLock()
         self._value = value
         self._lock = lock
 
-    def set(self, new_val: Any):
+    def set(self, new_val: T):
         with self:
             self._value = new_val
 

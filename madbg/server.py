@@ -1,30 +1,24 @@
 from __future__ import annotations
 from functools import partial
 from prompt_toolkit.application import create_app_session
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, Future
 
 from traceback import format_exc
 from contextlib import asynccontextmanager, AsyncExitStack
 
 import pickle
 import struct
-from asyncio import Protocol, StreamReader, StreamWriter, AbstractEventLoop, start_server, new_event_loop, Future, Event
-from dataclasses import dataclass, field
-from threading import Thread, current_thread
-from typing import Any, Set, Optional
+from asyncio import Protocol, StreamReader, StreamWriter, AbstractEventLoop, start_server, new_event_loop, \
+    Event, Task, CancelledError
+from dataclasses import dataclass
+from threading import Thread
+from typing import Set, Optional
 
 from .consts import Addr
 from .debugger import RemoteIPythonDebugger, Client
 from .tty_utils import print_to_ctty, PTY, TTYConfig
 from .communication import MESSAGE_LENGTH_FMT, MESSAGE_LENGTH_LENGTH, read_into_until_stopped
-from .utils import Locked
 from .app import create_app
-
-
-@dataclass
-class State:
-    address: tuple
-    future: Future = field(default_factory=Future)
 
 
 class ClientMulticastProtocol(Protocol):
@@ -125,18 +119,22 @@ class Session:
             self.debugger.remove_client(client)
 
 
-@dataclass
-class DebuggerServer:
-    STATE = Locked(None)
+class DebuggerServer(Thread):
+    INSTANCE: Optional[DebuggerServer] = None
 
-    loop: AbstractEventLoop
-    thread: Thread
-    sessions: dict[Thread, Session] = field(default_factory=dict)
-    exit_stack: AsyncExitStack = field(default_factory=AsyncExitStack)
-    executor: ThreadPoolExecutor = field(default_factory=lambda: ThreadPoolExecutor(64))
+    def __init__(self, addr: Addr):
+        super().__init__(name='madbg')
+        self.addr = addr
+        self.loop: AbstractEventLoop = new_event_loop()
+        self.sessions: dict[Thread, Session] = {}
+        self.exit_stack: AsyncExitStack = AsyncExitStack()
+        self.executor: ThreadPoolExecutor = ThreadPoolExecutor(64)
+        self.future: Future = Future()
+        self.serve_task: Optional[Task] = None
 
     def __post_init__(self):
         self.exit_stack.push(self.executor)
+        self.loop.set_debug(True)
 
     async def get_session(self, thread: Thread) -> Session:
         session = self.sessions.get(thread)
@@ -146,7 +144,7 @@ class DebuggerServer:
         return session
 
     def _get_madbg_threads(self):
-        threads = {self.thread}
+        threads = {self}
         try:
             with self.executor._shutdown_lock:
                 threads.update(self.executor._threads)
@@ -177,10 +175,12 @@ class DebuggerServer:
         """
         with create_app_session():
             threads_blacklist = self._get_madbg_threads()
-            return create_app(async_pty.pty.slave_io,
-                              async_pty.pty.slave_io,
-                              config.term_type,
-                              threads_blacklist).run()
+            app = create_app(async_pty.pty.slave_io,
+                             async_pty.pty.slave_io,
+                             config.term_type,
+                             threads_blacklist)
+            self.exit_stack.callback(app.exit)
+            return app.run()
 
     async def _handle_client(self, reader: StreamReader, writer: StreamWriter):
         peer = writer.get_extra_info('peername')
@@ -193,7 +193,9 @@ class DebuggerServer:
             while True:
                 async with async_pty.write_into(reader):
                     # Running in executor because of https://github.com/prompt-toolkit/python-prompt-toolkit/issues/1705
-                    choice = await self.loop.run_in_executor(self.executor, self._run_app, async_pty, config)
+                    app = self.loop.run_in_executor(self.executor, self._run_app, async_pty, config)
+                    self.exit_stack.push_async_callback(lambda: app)
+                    choice = await app
                 if choice is None:
                     break
                 session = await self.get_session(choice)
@@ -201,76 +203,75 @@ class DebuggerServer:
         writer.close()
         print_to_ctty(f'Client disconnected {peer}')
 
-    async def _try_handle_client(self, reader: StreamReader, writer: StreamWriter):
-        """
-        # TODO
-        Tried:
-
-        def exception_handler(loop, context):
-            print("exception occured, closing server")
-            loop.default_exception_handler(context)
-            server.close()
-        self.loop.set_exception_handler(exception_handler)
-
-        but it didn't work
-        """
-        try:
-            await self._handle_client(reader, writer)
-        except:
-            print_to_ctty(f'Madbg - error handling client:\n{format_exc()}')
-            writer.close()
-            raise
-
-    async def _serve(self, addr: Any):
-        assert isinstance(addr, tuple) and isinstance(addr[0], str) and isinstance(addr[1], int)
-        ip, port = addr
+    async def _serve(self):
+        # TODO: support all addr types
+        assert isinstance(self.addr, tuple) and isinstance(self.addr[0], str) and isinstance(self.addr[1], int)
+        ip, port = self.addr
         print_to_ctty(f'Listening for debugger clients on {ip}:{port}')
-        server = await start_server(self._try_handle_client, ip, port)
+        server = await start_server(self._handle_client, ip, port)
         await server.serve_forever()
 
-    @classmethod
-    async def _async_run(cls, loop: AbstractEventLoop, addr: Any):
-        self = cls(loop, current_thread())
+    async def _async_run(self):
+        self.serve_task = self.loop.create_task(self._serve())
         try:
-            await self._serve(addr)
+            await self.serve_task
+        except CancelledError:
+            pass
         except Exception as e:
-            with cls.STATE as state:
-                state.set_exception(e)
+            print_to_ctty(f'Madbg - error handling client:\n{format_exc()}')
+            self.future.set_exception(e)
             raise
         finally:
             await self.exit_stack.aclose()
 
-    @classmethod
-    def _run(cls, addr: Any):
-        # TODO: Is that right? Not get_event_loop?
-        loop = new_event_loop()
-        loop.set_debug(True)
-        loop.run_until_complete(cls._async_run(loop, addr))
+    def run(self):
+        self.loop.run_until_complete(self._async_run())
+        self.future.set_result(None)
 
     @classmethod
     def make_sure_listening_at(cls, addr: Addr):
-        with cls.STATE as state:
-            if state is None:
-                # TODO: receive addr as arg
-                cls.STATE.set(State(addr))
-                Thread(daemon=True, target=cls._run, args=(addr,), name='madbg').start()
-            elif state.future.done():
+        if cls.INSTANCE is None:
+            self = cls(addr)
+            self.start()
+            cls.INSTANCE = self
+        else:
+            if cls.INSTANCE.future.done():
                 # Raise the exception
-                state.future.result()
-            else:
+                cls.INSTANCE.future.result()
                 # TODO
-                if addr != state.address:
-                    raise RuntimeError('No support for double bind')
+                raise RuntimeError('Rerunning the server is not supported yet')
+            else:
+                if addr != cls.INSTANCE.addr:
+                    # TODO
+                    raise RuntimeError('Binding on multiple addresses is not supported yet')
+
+    @classmethod
+    def stop(cls):
+        if cls.INSTANCE is None:
+            pass
+        else:
+            if cls.INSTANCE.future.done():
+                # Raise the exception
+                cls.INSTANCE.future.result()
+                # TODO
+                raise RuntimeError()
+            else:
+                if cls.INSTANCE.serve_task is not None:
+                    cls.INSTANCE.loop.call_soon_threadsafe(lambda: cls.INSTANCE.serve_task.cancel())
+                # Wait for server to finish
+                cls.INSTANCE.future.result()
 
 
 """
 Next steps:
     - self.curframe is none bug
     - release pyinjector and hypno versions
-    - no cleanup on client exit? how come when we stop the server c-\ when client is in fullscreen, terminal goes dead?
+    - after debugger is conncted, need two c-c:
+        we can't just make those threads daemons, we want cleanup code to run
+        we want to cancel all apps and wait for them
+    - client cleanup doesn't completely reset terminal, when app exits not clean, client terminal is dead
     - ipython prs - do we need to patch? or maybe depend on a fork?
     - trying to attach to two threads in parallel (two threads asleep, c-c to both) - one gets stuck.
-    - all of our threads should be daemons so they let the app exit - after debugger is conncted, need two c-c
     - ctrl c on debugee during debug shows --KeyboardInterrupt--, means we do register sigint handler
     - our own executors are showing up in the menu, hide them by keeping a list of them
     - skip menu if there is only one thread?
@@ -312,7 +313,13 @@ UI
             - Quit
         2. Thread view
             - Start debugging
-            - See live stack trace
+            - See live stack trace and locals
+                - live could be implemented by polling or by putting weakrefs on thread frames and using callbacks
+                  to update
+                - use color to represent freshness of frames so it'll be clear what threads are stuck
+                - deadlock detection:
+                    - can we find out all threads stuck on an acquire call and tell who acquired the locks?
+                    - after we found the deadlock, we can try and point out the bad code by traveling the stack and looking for withs
             - Quit
             - Go to main
         3. Debugger
