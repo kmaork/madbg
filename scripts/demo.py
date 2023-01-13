@@ -1,8 +1,11 @@
+import signal
 from threading import Thread
-
+import faulthandler
 import time
 import madbg
 
+
+faulthandler.register(signum=signal.SIGINT)
 madbg.start()
 
 

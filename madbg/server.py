@@ -1,6 +1,7 @@
 from __future__ import annotations
 from functools import partial
 from prompt_toolkit.application import create_app_session
+from concurrent.futures import ThreadPoolExecutor
 
 from traceback import format_exc
 from contextlib import asynccontextmanager, AsyncExitStack
@@ -10,7 +11,7 @@ import struct
 from asyncio import Protocol, StreamReader, StreamWriter, AbstractEventLoop, start_server, new_event_loop, Future, Event
 from dataclasses import dataclass, field
 from threading import Thread
-from typing import Any, Set
+from typing import Any, Set, Optional
 
 from .consts import Addr
 from .debugger import RemoteIPythonDebugger, Client
@@ -131,6 +132,10 @@ class DebuggerServer:
     loop: AbstractEventLoop
     sessions: dict[Thread, Session] = field(default_factory=dict)
     exit_stack: AsyncExitStack = field(default_factory=AsyncExitStack)
+    executor: ThreadPoolExecutor = field(default_factory=ThreadPoolExecutor)
+
+    def __post_init__(self):
+        self.exit_stack.push(self.executor)
 
     async def get_session(self, thread: Thread) -> Session:
         session = self.sessions.get(thread)
@@ -138,6 +143,22 @@ class DebuggerServer:
             session_cm = Session.create(self.loop, thread)
             session = self.sessions[thread] = await self.exit_stack.enter_async_context(session_cm)
         return session
+
+    def _run_app(self, async_pty: AsyncPTY, config: TTYConfig) -> Optional[Thread]:
+        """
+        Without create_app_session we get mixups between different running apps, and only one could run at a time.
+        According to prompt_toolkit docs at https://github.com/prompt-toolkit/python-prompt-toolkit/blob/
+        6b4af4e1c8763f2f3ccb2938605a44f57a1b8b5f/src/prompt_toolkit/application/application.py#L179:
+
+        (Note that the preferred way to change the input/output is by creating an
+        `AppSession` with the required input/output objects. If you need multiple
+        applications running at the same time, you have to create a separate
+        `AppSession` using a `with create_app_session():` block.
+        """
+        with create_app_session():
+            return create_app(async_pty.pty.slave_io,
+                              async_pty.pty.slave_io,
+                              config.term_type).run()
 
     async def _handle_client(self, reader: StreamReader, writer: StreamWriter):
         peer = writer.get_extra_info('peername')
@@ -149,20 +170,8 @@ class DebuggerServer:
             config.apply(async_pty.pty.slave_fd)
             while True:
                 async with async_pty.write_into(reader):
-                    """
-                    Without this we get mixups between different running apps, and only one could run at a time.
-                    According to prompt_toolkit docs at https://github.com/prompt-toolkit/python-prompt-toolkit/blob/
-                    6b4af4e1c8763f2f3ccb2938605a44f57a1b8b5f/src/prompt_toolkit/application/application.py#L179:
-                    
-                    (Note that the preferred way to change the input/output is by creating an
-                    `AppSession` with the required input/output objects. If you need multiple
-                    applications running at the same time, you have to create a separate
-                    `AppSession` using a `with create_app_session():` block.
-                    """
-                    with create_app_session():
-                        choice = await create_app(async_pty.pty.slave_io,
-                                                  async_pty.pty.slave_io,
-                                                  config.term_type).run_async()
+                    # Running in executor because of https://github.com/prompt-toolkit/python-prompt-toolkit/issues/1705
+                    choice = await self.loop.run_in_executor(self.executor, self._run_app, async_pty, config)
                 if choice is None:
                     break
                 session = await self.get_session(choice)
@@ -234,6 +243,7 @@ class DebuggerServer:
 
 """
 Next steps:
+    - self.curframe is none bug
     - release pyinjector and hypno versions
     - no cleanup on client exit? how come when we stop the server c-\ when client is in fullscreen, terminal goes dead?
     - ipython prs - do we need to patch? or maybe depend on a fork?
