@@ -35,8 +35,13 @@ def get_running_app(debugger):
         pt_app.exit()
         debugger.attach()
 
+    @kb.add('q')
+    def handle_q(_event):
+        pt_app.exit()
+        debugger.quit()
+
     pt_app = Application(
-        layout=Layout(Label('Press Ctrl-C to attach')),
+        layout=Layout(Label(f'Press Ctrl-C to attach to {debugger.thread.name} or q to quit')),
         key_bindings=kb,
         input=debugger.term_input,
         output=debugger.term_output,
@@ -116,7 +121,7 @@ class RemoteIPythonDebugger(TerminalPdb):
                 self.clients.remove(client)
                 self._configure_tty()
                 if not self.clients:
-                    # TODO: can we use self.stop_here (from ipython code) instead of the debugging global?
+                    # TODO: can we use self.stop_here or self._set_stopinfo (from ipython code) instead of the debugging global?
                     if self.pt_app.app.is_running:
                         self.pt_app.app.exit('quit')
                     if self.running_app.is_running:
@@ -144,9 +149,9 @@ class RemoteIPythonDebugger(TerminalPdb):
             bdb_quit = True
         finally:
             if self.quitting or bdb_quit:
-                self._on_done()
+                self.quit()
 
-    def _on_done(self):
+    def quit(self):
         with self.clients_lock:
             for client in self.clients:
                 client.on_detach()

@@ -268,15 +268,46 @@ class DebuggerServer(Thread):
 
 
 """
-1! None
-1! None
-2! <frame at 0x7f178113eca0, file '/mnt/c/Users/kmaor/Documents/code/madbg/scripts/demo.py', line 15, code a>
-Hello second thread
-Hello second thread
-Hello second thread
-Hello second thread
-1! None
-Hello second thread
+This cause the clear:
+File "/mnt/c/Users/kmaor/Documents/code/madbg/scripts/demo.py", line 26, in <module>
+    a()
+  File "/mnt/c/Users/kmaor/Documents/code/madbg/scripts/demo.py", line 15, in a
+    print('Hello main thread')
+  File "/mnt/c/Users/kmaor/Documents/code/madbg/madbg/debugger.py", line 138, in trace_dispatch
+    return self.trace_dispatch
+  File "/usr/lib/python3.11/bdb.py", line 90, in trace_dispatch
+    return self.dispatch_line(frame)
+  File "/usr/lib/python3.11/bdb.py", line 114, in dispatch_line
+    self.user_line(frame)
+  File "/usr/lib/python3.11/pdb.py", line 344, in user_line
+    self.interaction(frame, None)
+  File "/mnt/c/Users/kmaor/Documents/code/clones/ipython/IPython/core/debugger.py", line 335, in interaction
+    OldPdb.interaction(self, frame, traceback)
+  File "/usr/lib/python3.11/pdb.py", line 440, in interaction
+    self._cmdloop()
+  File "/usr/lib/python3.11/pdb.py", line 404, in _cmdloop
+    self.cmdloop()
+  File "/mnt/c/Users/kmaor/Documents/code/clones/ipython/IPython/terminal/debugger.py", line 144, in cmdloop
+    line = self.thread_executor.submit(self._prompt).result()
+  File "/usr/lib/python3.11/concurrent/futures/_base.py", line 451, in result
+    self._condition.wait(timeout)
+  File "/usr/lib/python3.11/threading.py", line 320, in wait
+    waiter.acquire()
+  File "<string>", line 1, in <module>
+  File "/mnt/c/Users/kmaor/Documents/code/hypno/hypno/hypno.py", line 86, in execute
+    self.result = self.func(*self.args, **self.kwargs)
+  File "/mnt/c/Users/kmaor/Documents/code/madbg/madbg/debugger.py", line 90, in set
+    f = currentframe().f_back.f_back.f_back
+  File "/mnt/c/Users/kmaor/Documents/code/clones/ipython/IPython/core/debugger.py", line 294, in set_trace
+    return super().set_trace(frame)
+  File "/usr/lib/python3.11/bdb.py", line 330, in set_trace
+    self.reset()
+  File "/usr/lib/python3.11/pdb.py", line 276, in reset
+    self.forget()
+  File "/usr/lib/python3.11/pdb.py", line 285, in forget
+    traceback.print_stack()
+
+This is the error:
 Traceback (most recent call last):
   File "/mnt/c/Users/kmaor/Documents/code/madbg/scripts/demo.py", line 26, in <module>
     a()
@@ -286,76 +317,76 @@ Traceback (most recent call last):
   File "/mnt/c/Users/kmaor/Documents/code/madbg/scripts/demo.py", line 15, in a
     print('Hello main thread')
     ^^^^^
-  File "/mnt/c/Users/kmaor/Documents/code/madbg/madbg/debugger.py", line 134, in trace_dispatch
-    s = super().trace_dispatch(frame, event, arg)
-        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/c/Users/kmaor/Documents/code/madbg/madbg/debugger.py", line 138, in trace_dispatch
+    return self.trace_dispatch
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
   File "/usr/lib/python3.11/bdb.py", line 90, in trace_dispatch
     return self.dispatch_line(frame)
            ^^^^^^^^^^^^^^^^^^^^^^^^^
   File "/usr/lib/python3.11/bdb.py", line 114, in dispatch_line
     self.user_line(frame)
-  File "/usr/lib/python3.11/pdb.py", line 342, in user_line
+  File "/usr/lib/python3.11/pdb.py", line 344, in user_line
     self.interaction(frame, None)
   File "/mnt/c/Users/kmaor/Documents/code/clones/ipython/IPython/core/debugger.py", line 335, in interaction
     OldPdb.interaction(self, frame, traceback)
-  File "/usr/lib/python3.11/pdb.py", line 437, in interaction
+  File "/usr/lib/python3.11/pdb.py", line 440, in interaction
     self._cmdloop()
-  File "/usr/lib/python3.11/pdb.py", line 402, in _cmdloop
+  File "/usr/lib/python3.11/pdb.py", line 404, in _cmdloop
     self.cmdloop()
   File "/mnt/c/Users/kmaor/Documents/code/clones/ipython/IPython/terminal/debugger.py", line 139, in cmdloop
     self._ptcomp.ipy_completer.global_namespace = self.curframe.f_globals
                                                   ^^^^^^^^^^^^^^^^^^^^^^^
 AttributeError: 'NoneType' object has no attribute 'f_globals'
 
-attached mainthread and pressed enter
+The bug - we somehow attached during cmdloop and called set_trace. set_trace reset the debugger during cmdloop
+which calls forget which unsets self.curframe.
 """
 
 
 """
-Next steps:
-    - self.curframe is none bug
-    - after debugging for a while, needed to quit multiple times to get out
+Bugs:
+    Important:
+        - self.curframe is none bug - as explained above, happens when we set_trace when already set. This should be also
+          adressed in the case there are breakpoint, because then settrace(None) is not called
+    
+    Less important:
+        - c-c on original terminal when debugger is open cancels future commands
+        - when an app is active, need two c-c on debugged process to exit:
+            we can't just make those threads daemons, we want cleanup code to run
+            we want to cancel all apps and wait for them
+        - trying to attach to two threads in parallel (two threads asleep, c-c to both) - one gets stuck.
+        - when writing ? in the terminal, "Object `` not found." is printed to stdout
+
+Features:
+    Important:
+        - support multiple clients - need to redraw app when new client connects
+    Less important:
+        - client cleanup doesn't completely reset terminal, when app exits not clean, client terminal is dead
+        - client-level detach (c-z, c-\)
+Improvements:
+    Important:
+        - run in thread using ptrace - better than signal??
+          signal: interfering with signal handlers
+          ptrace: invoke subprocess, load dll
+              which of them is more reentrant?
+              can we at least verify the dest thread is blocked on a syscall? this is probable as we are holding
+              the gil.
+              do we have another approach?
+        - signal.siginterrupt - use to attach to threads in syscalls?
+        - use the new api for setting trace on other threads
+        - pyinjector issues:
+            - getting the python error back to us or at least know that it failed
+            - deadlock
+    Less important:
+        - once we set trace on a thread, maybe during continue we don't cancel the trace but just don't invoke the debugger,
+          then we don't have to reattach the thread
+        - get rid of piping
+TODO:
     - release pyinjector and hypno versions
-    - after debugger is conncted, need two c-c:
-        we can't just make those threads daemons, we want cleanup code to run
-        we want to cancel all apps and wait for them
-    - client cleanup doesn't completely reset terminal, when app exits not clean, client terminal is dead
     - ipython prs - do we need to patch? or maybe depend on a fork?
-    - trying to attach to two threads in parallel (two threads asleep, c-c to both) - one gets stuck.
-    - our own executors are showing up in the menu, hide them by keeping a list of them
-    - skip menu if there is only one thread?
-    - when writing ? in the terminal, "Object `` not found." is printed to stdout 
-    - once we set trace on a thread, maybe during continue we don't cancel the trace but just don't invoke the debugger,
-      then we don't have to reattach the thread
-    - run in thread using ptrace - better than signal??
-        signal: interfering with signal handlers
-        ptrace: invoke subprocess, load dll
-            which of them is more reentrant?
-            can we at least verify the dest thread is blocked on a syscall? this is probable as we are holding
-            the gil.
-            do we have another approach?
-    - get rid of piping
-    - signal.siginterrupt - use to attach to threads in syscalls?
-    - use the new api for setting trace on other threads
-    - user connects, gets main app - choose thread to debug
-      to users can debug two separate threads at once
-      when two users are debugging the same thread:
-        double connect?
-        decline second user?
-      each thread should have only one controller state, therefore one app
-      the app could be configured with the first user's terminal, and connected through a raw pty to each
-      user's pty
-      so each thread has a pty, and each user has a pty
-    - app - show periodically updated stack traces
-    - deadlock detection support
-    - pyinjector issues:
-        - getting the python error back to us or at least know that it failed
-        - threads
-        - deadlock
-    - client-level detach (c-z, c-\)
     - support processes without tty
     - support mac n windows
-
+    
 
 UI
     There are three views:
@@ -363,6 +394,7 @@ UI
             - See all threads
             - Choose a thread
             - Quit
+            - skip if there is only one thread?
         2. Thread view
             - Start debugging
             - See live stack trace and locals
