@@ -9,7 +9,7 @@ from bdb import BdbQuit
 from contextlib import contextmanager, nullcontext
 from inspect import currentframe
 from prompt_toolkit.application import create_app_session
-from threading import Thread
+from threading import Thread, RLock
 from typing import ContextManager, Callable, Any
 from hypno import run_in_thread
 from prompt_toolkit import Application
@@ -77,6 +77,7 @@ class RemoteIPythonDebugger(TerminalPdb):
         # todo: run main debugger prompt in our loop
         self.running_app = get_running_app(self)
         self.check_debugging_global = False
+        self.clients_lock = RLock()
 
     def _get_prompt(self):
         return PygmentsTokens([(Token.Prompt, f'{self.thread.name}> ')])
@@ -93,27 +94,30 @@ class RemoteIPythonDebugger(TerminalPdb):
         run_in_thread(self.thread, set)
 
     def _configure_tty(self):
-        if len(self.clients) == 1:
-            tty_config = next(iter(self.clients)).config
-            tty_config.apply(self.pty.slave_fd)
-            self.term_output.term = tty_config.term_type
-            self.term_input.term = tty_config.term_type
+        with self.clients_lock:
+            if len(self.clients) == 1:
+                tty_config = next(iter(self.clients)).config
+                tty_config.apply(self.pty.slave_fd)
+                self.term_output.term = tty_config.term_type
+                self.term_input.term = tty_config.term_type
 
     def add_client(self, client: Client):
-        self.clients.add(client)
-        self._configure_tty()
-        self._run_running_app()
+        with self.clients_lock:
+            self.clients.add(client)
+            self._configure_tty()
+            self._run_running_app()
 
     def remove_client(self, client: Client):
-        if client in self.clients:
-            self.clients.remove(client)
-            self._configure_tty()
-            if not self.clients:
-                # TODO: can we use self.stop_here (from ipython code) instead of the debugging global?
-                if self.pt_app.app.is_running:
-                    self.pt_app.app.exit('quit')
-                if self.running_app.is_running:
-                    self.running_app.exit()
+        with self.clients_lock:
+            if client in self.clients:
+                self.clients.remove(client)
+                self._configure_tty()
+                if not self.clients:
+                    # TODO: can we use self.stop_here (from ipython code) instead of the debugging global?
+                    if self.pt_app.app.is_running:
+                        self.pt_app.app.exit('quit')
+                    if self.running_app.is_running:
+                        self.running_app.exit()
 
     def preloop(self):
         if not self.clients:
@@ -140,9 +144,10 @@ class RemoteIPythonDebugger(TerminalPdb):
                 self._on_done()
 
     def _on_done(self):
-        for client in self.clients:
-            client.on_detach()
-        self.clients.clear()
+        with self.clients_lock:
+            for client in self.clients:
+                client.on_detach()
+            self.clients.clear()
 
     def _run_running_app(self, in_new_thread=True):
         if in_new_thread:

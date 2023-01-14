@@ -123,7 +123,7 @@ class DebuggerServer(Thread):
     INSTANCE: Optional[DebuggerServer] = None
 
     def __init__(self, addr: Addr):
-        super().__init__(name='madbg')
+        super().__init__(name='madbg', daemon=True)
         self.addr = addr
         self.loop: AbstractEventLoop = new_event_loop()
         self.sessions: dict[Thread, Session] = {}
@@ -179,7 +179,12 @@ class DebuggerServer(Thread):
                              async_pty.pty.slave_io,
                              config.term_type,
                              threads_blacklist)
-            self.exit_stack.callback(app.exit)
+
+            def on_exit():
+                if app.is_running:
+                    app.exit()
+
+            self.exit_stack.callback(on_exit)
             return app.run()
 
     async def _handle_client(self, reader: StreamReader, writer: StreamWriter):
@@ -263,8 +268,53 @@ class DebuggerServer(Thread):
 
 
 """
+1! None
+1! None
+2! <frame at 0x7f178113eca0, file '/mnt/c/Users/kmaor/Documents/code/madbg/scripts/demo.py', line 15, code a>
+Hello second thread
+Hello second thread
+Hello second thread
+Hello second thread
+1! None
+Hello second thread
+Traceback (most recent call last):
+  File "/mnt/c/Users/kmaor/Documents/code/madbg/scripts/demo.py", line 26, in <module>
+    a()
+  File "/mnt/c/Users/kmaor/Documents/code/madbg/scripts/demo.py", line 15, in a
+    print('Hello main thread')
+    ^^^^^
+  File "/mnt/c/Users/kmaor/Documents/code/madbg/scripts/demo.py", line 15, in a
+    print('Hello main thread')
+    ^^^^^
+  File "/mnt/c/Users/kmaor/Documents/code/madbg/madbg/debugger.py", line 134, in trace_dispatch
+    s = super().trace_dispatch(frame, event, arg)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/bdb.py", line 90, in trace_dispatch
+    return self.dispatch_line(frame)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/bdb.py", line 114, in dispatch_line
+    self.user_line(frame)
+  File "/usr/lib/python3.11/pdb.py", line 342, in user_line
+    self.interaction(frame, None)
+  File "/mnt/c/Users/kmaor/Documents/code/clones/ipython/IPython/core/debugger.py", line 335, in interaction
+    OldPdb.interaction(self, frame, traceback)
+  File "/usr/lib/python3.11/pdb.py", line 437, in interaction
+    self._cmdloop()
+  File "/usr/lib/python3.11/pdb.py", line 402, in _cmdloop
+    self.cmdloop()
+  File "/mnt/c/Users/kmaor/Documents/code/clones/ipython/IPython/terminal/debugger.py", line 139, in cmdloop
+    self._ptcomp.ipy_completer.global_namespace = self.curframe.f_globals
+                                                  ^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'f_globals'
+
+attached mainthread and pressed enter
+"""
+
+
+"""
 Next steps:
     - self.curframe is none bug
+    - after debugging for a while, needed to quit multiple times to get out
     - release pyinjector and hypno versions
     - after debugger is conncted, need two c-c:
         we can't just make those threads daemons, we want cleanup code to run
@@ -319,6 +369,7 @@ UI
                 - use color to represent freshness of frames so it'll be clear what threads are stuck
                 - deadlock detection:
                     - can we find out all threads stuck on an acquire call and tell who acquired the locks?
+                        possible for rlocks, not for locks - might need pthread/kernel level data for that.
                     - after we found the deadlock, we can try and point out the bad code by traveling the stack and looking for withs
             - Quit
             - Go to main
