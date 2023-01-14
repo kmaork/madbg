@@ -1,4 +1,3 @@
-import atexit
 import re
 import sys
 from traceback import format_exc
@@ -15,7 +14,6 @@ from .debugger import RemoteIPythonDebugger
 
 def start(addr: Addr = DEFAULT_ADDR):
     DebuggerServer.make_sure_listening_at(addr)
-    atexit.register(DebuggerServer.stop)
 
 
 def _inject_set_trace(pid: int, addr: Addr = DEFAULT_ADDR):

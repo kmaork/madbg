@@ -8,15 +8,17 @@ import sys
 from bdb import BdbQuit
 from contextlib import contextmanager, nullcontext
 from inspect import currentframe
+from sys import _current_frames
+
 from prompt_toolkit.application import create_app_session
 from threading import Thread, RLock
 from typing import ContextManager, Callable, Any
 from hypno import run_in_thread
-from prompt_toolkit import Application
+from prompt_toolkit import Application, ANSI
 from prompt_toolkit.formatted_text import PygmentsTokens
 from prompt_toolkit.input.vt100 import Vt100Input
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout import Layout
+from prompt_toolkit.layout import Layout, HSplit, WindowAlign
 from prompt_toolkit.output.vt100 import Vt100_Output
 from IPython.terminal.debugger import TerminalPdb
 from IPython.terminal.interactiveshell import TerminalInteractiveShell
@@ -40,12 +42,29 @@ def get_running_app(debugger):
         pt_app.exit()
         debugger.quit()
 
+    def get_stack(frame):
+        stack = []
+        while frame is not None:
+            stack.append(frame)
+            frame = frame.f_back
+        return reversed(stack)
+
+    def get_stack_trace():
+        debugger.curframe = None
+        frame = _current_frames()[debugger.thread.ident]
+        return ANSI(''.join(debugger.format_stack_entry((f, f.f_lineno)) for f in get_stack(frame)))
+
     pt_app = Application(
-        layout=Layout(Label(f'Press Ctrl-C to attach to {debugger.thread.name} or q to quit')),
+        layout=Layout(HSplit([
+            Label(f'{debugger.thread.name} - running', align=WindowAlign.CENTER, style='bg:#055515'),
+            Label(f'Press Ctrl-C to attach or q to quit\n', align=WindowAlign.CENTER),
+            Label(get_stack_trace)
+        ])),
         key_bindings=kb,
         input=debugger.term_input,
         output=debugger.term_output,
         erase_when_done=True,
+        refresh_interval=0.5,
     )
     return pt_app
 

@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor, Future
 
 from traceback import format_exc
 from contextlib import asynccontextmanager, AsyncExitStack
-
+import atexit
 import pickle
 import struct
 from asyncio import Protocol, StreamReader, StreamWriter, AbstractEventLoop, start_server, new_event_loop, \
@@ -188,32 +188,54 @@ class DebuggerServer(Thread):
             return app.run()
 
     async def _handle_client(self, reader: StreamReader, writer: StreamWriter):
-        peer = writer.get_extra_info('peername')
-        print_to_ctty(f'Madbg - client connected from {peer}')
-        config_len = struct.unpack(MESSAGE_LENGTH_FMT, await reader.readexactly(MESSAGE_LENGTH_LENGTH))[0]
-        config: TTYConfig = pickle.loads(await reader.readexactly(config_len))
-        # Not using context manager because _UnixWritePipeTransport.__del__ closes its pipe
-        async with AsyncPTY.open(self.loop) as async_pty, async_pty.read_into(writer):
-            config.apply(async_pty.pty.slave_fd)
-            while True:
-                async with async_pty.write_into(reader):
-                    # Running in executor because of https://github.com/prompt-toolkit/python-prompt-toolkit/issues/1705
-                    app = self.loop.run_in_executor(self.executor, self._run_app, async_pty, config)
-                    self.exit_stack.push_async_callback(lambda: app)
-                    choice = await app
-                if choice is None:
-                    break
-                session = await self.get_session(choice)
-                await session.connect_client(reader, writer, config)
-        writer.close()
+        try:
+            peer = writer.get_extra_info('peername')
+            print_to_ctty(f'Madbg - client connected from {peer}')
+            config_len = struct.unpack(MESSAGE_LENGTH_FMT, await reader.readexactly(MESSAGE_LENGTH_LENGTH))[0]
+            config: TTYConfig = pickle.loads(await reader.readexactly(config_len))
+            # Not using context manager because _UnixWritePipeTransport.__del__ closes its pipe
+            async with AsyncPTY.open(self.loop) as async_pty, async_pty.read_into(writer):
+                config.apply(async_pty.pty.slave_fd)
+                while True:
+                    async with async_pty.write_into(reader):
+                        # Running in executor because of https://github.com/prompt-toolkit/python-prompt-toolkit/issues/1705
+                        app = self.loop.run_in_executor(self.executor, self._run_app, async_pty, config)
+                        self.exit_stack.push_async_callback(lambda: app)
+                        choice = await app
+                    if choice is None:
+                        break
+                    session = await self.get_session(choice)
+                    await session.connect_client(reader, writer, config)
+        finally:
+            writer.close()
         print_to_ctty(f'Client disconnected {peer}')
+
+    async def _try_handle_client(self, reader: StreamReader, writer: StreamWriter):
+        """
+        # TODO
+        Tried:
+
+        def exception_handler(loop, context):
+            print("exception occured, closing server")
+            loop.default_exception_handler(context)
+            server.close()
+        self.loop.set_exception_handler(exception_handler)
+
+        but it didn't work
+        """
+        try:
+            await self._handle_client(reader, writer)
+        except:
+            print_to_ctty(f'Madbg - error handling client:\n{format_exc()}')
+            writer.close()
+            raise
 
     async def _serve(self):
         # TODO: support all addr types
         assert isinstance(self.addr, tuple) and isinstance(self.addr[0], str) and isinstance(self.addr[1], int)
         ip, port = self.addr
         print_to_ctty(f'Listening for debugger clients on {ip}:{port}')
-        server = await start_server(self._handle_client, ip, port)
+        server = await start_server(self._try_handle_client, ip, port)
         await server.serve_forever()
 
     async def _async_run(self):
@@ -235,9 +257,13 @@ class DebuggerServer(Thread):
 
     @classmethod
     def make_sure_listening_at(cls, addr: Addr):
+        """
+        This code might be called from injected code, so make it as simple and short as possible.
+        """
         if cls.INSTANCE is None:
             self = cls(addr)
             self.start()
+            atexit.register(DebuggerServer.stop)
             cls.INSTANCE = self
         else:
             if cls.INSTANCE.future.done():
@@ -268,6 +294,7 @@ class DebuggerServer(Thread):
 
 
 """
+self.curframe is none bug:
 This cause the clear:
 File "/mnt/c/Users/kmaor/Documents/code/madbg/scripts/demo.py", line 26, in <module>
     a()
@@ -342,12 +369,36 @@ The bug - we somehow attached during cmdloop and called set_trace. set_trace res
 which calls forget which unsets self.curframe.
 """
 
+"""
+stopping debugee after attach bug:
+Task was destroyed but it is pending!
+task: <Task pending name='Task-17' coro=<StreamWriter.drain() running at /usr/lib/python3.11/asyncio/streams.py:355>>  
+/usr/lib/python3.11/asyncio/base_events.py:675: RuntimeWarning: coroutine 'StreamWriter.drain' was never awaited       
+Task was destroyed but it is pending!
+task: <Task pending name='Task-6' coro=<read_into_until_stopped() running at /mnt/c/Users/kmaor/Documents/code/madbg/ma
+dbg/communication.py:31> wait_for=<Future pending cb=[Task.task_wakeup()]> cb=[Task.task_wakeup()]>
+Task was destroyed but it is pending!
+task: <Task pending name='Task-5' coro=<DebuggerServer._try_handle_client() running at /mnt/c/Users/kmaor/Documents/cod
+e/madbg/madbg/server.py:227> wait_for=<Task pending name='Task-6' coro=<read_into_until_stopped() running at /mnt/c/Use
+rs/kmaor/Documents/code/madbg/madbg/communication.py:31> wait_for=<Future pending cb=[Task.task_wakeup()]> cb=[Task.tas
+k_wakeup()]>>
+Exception ignored in: <coroutine object DebuggerServer._try_handle_client at 0x7fb459c9a6b0>
+Traceback (most recent call last):
+  File "/mnt/c/Users/kmaor/Documents/code/madbg/madbg/server.py", line 229, in _try_handle_client
+  File "/mnt/c/Users/kmaor/Documents/code/madbg/madbg/tty_utils.py", line 97, in print_to_ctty
+NameError: name 'open' is not defined
+Task was destroyed but it is pending!
+task: <Task pending name='Task-8' coro=<read_into() running at /mnt/c/Users/kmaor/Documents/code/madbg/madbg/communicat
+ion.py:20> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+"""
 
 """
 Bugs:
     Important:
         - self.curframe is none bug - as explained above, happens when we set_trace when already set. This should be also
           adressed in the case there are breakpoint, because then settrace(None) is not called
+        - nice message on client timeout
+        - stopping debuggee after attach shows the stack trace above
     
     Less important:
         - c-c on original terminal when debugger is open cancels future commands
@@ -359,6 +410,7 @@ Bugs:
 
 Features:
     Important:
+        - ui plans
         - support multiple clients - need to redraw app when new client connects
     Less important:
         - client cleanup doesn't completely reset terminal, when app exits not clean, client terminal is dead
@@ -379,10 +431,12 @@ Improvements:
         - pyinjector issues:
             - getting the python error back to us or at least know that it failed
             - deadlock
+        - how does pydevd attach
     Less important:
         - once we set trace on a thread, maybe during continue we don't cancel the trace but just don't invoke the debugger,
           then we don't have to reattach the thread
         - get rid of piping
+
 TODO:
     - release pyinjector and hypno versions
     - ipython prs - do we need to patch? or maybe depend on a fork?

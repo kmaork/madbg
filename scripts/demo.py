@@ -2,27 +2,32 @@ import signal
 from threading import Thread
 import faulthandler
 import time
-import madbg
-
 
 faulthandler.register(signum=signal.SIGQUIT)
-madbg.start()
 
 
-def a():
+def main():
     while True:
-        time.sleep(2)
-        print('Hello main thread')
+        'a'
+        time.sleep(0.5)
+        'b'
+        time.sleep(0.5)
+        'c'
+        time.sleep(0.5)
 
 
-def b():
+def second():
     while True:
-        time.sleep(2)
-        print('Hello second thread')
+        '1'
+        time.sleep(0.5)
+        '2'
+        time.sleep(0.5)
+        '3'
+        time.sleep(0.5)
 
 
-Thread(target=b, name='SecondThread', daemon=True).start()
+Thread(target=second, name='SecondThread', daemon=True).start()
 try:
-    a()
+    main()
 except KeyboardInterrupt:
     pass

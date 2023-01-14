@@ -1,4 +1,3 @@
-import sys
 from typing import TextIO, Optional
 import threading
 
@@ -17,14 +16,15 @@ def create_app(reader: TextIO, writer: TextIO, term_type: Optional[str] = None, 
     radio_list = RadioList([(t, t.name) for t in threading.enumerate() if t not in threads_blacklist and t.is_alive()])
 
     dialog = Dialog(
-        title='Choose thread to debug',
+        title=[('fg:darkgreen', 'Madbg')],
         body=HSplit(
-            [Label(text='Choosing a thread will not attach to it', dont_extend_height=True), radio_list],
+            [Label(text='Choose a thread:', dont_extend_height=True), radio_list],
             padding=1,
         ),
         buttons=[
-            Button(text='Debug!', handler=lambda: app.exit(result=radio_list.current_value)),
-            Button(text='Exit', handler=lambda: app.exit(result=None)),
+            Button(text='Debug!', handler=lambda: app.exit(result=radio_list.current_value),
+                   left_symbol='[', right_symbol=']'),
+            Button(text='Exit', handler=lambda: app.exit(result=None), left_symbol='[', right_symbol=']'),
         ],
         with_background=True,
     )
@@ -45,11 +45,3 @@ def create_app(reader: TextIO, writer: TextIO, term_type: Optional[str] = None, 
         output=term_output,
     )
     return app
-
-
-if __name__ == '__main__':
-    from threading import Thread
-    from time import sleep
-
-    Thread(target=sleep, args=(10,), daemon=True, name='Sleeper').start()
-    print(create_app(sys.stdin, sys.stdout).run())
