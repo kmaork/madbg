@@ -362,7 +362,9 @@ Features:
         - support multiple clients - need to redraw app when new client connects
     Less important:
         - client cleanup doesn't completely reset terminal, when app exits not clean, client terminal is dead
-        - client-level detach (c-z, c-\)
+        - client-level detach - support pause with c-z and quit with c-q or c-\
+        - allow snooping stdios
+
 Improvements:
     Important:
         - run in thread using ptrace - better than signal??
@@ -416,26 +418,6 @@ UI
         will open the UI in the current terminal
 
 
-- There is only one debugger with one session
-- A trace can start at any thread because of a set_trace(), or a client setting it
-- A trace can start when there is no client connected, but should print a warning to tty
-- A client can disconnect when there is an active trace, but should be warned
-- madbg.listen() can tell the server where to accept connections. It adds them to the current session
-- when a new client connects, they have a set of options
-    - ctrl-p toggle snooping stdios (on by default)
-    - ctrl-c stops the program with a breakpoint (sent by default? what if we want a different thread?)
-    - ctrl-t choose thread
-    - ctrl-d detach, asking server to close socket (warning if a trace is still ongoing)
-    - ctrl-z client size pause
-    - ctrl-q client side force-close
-
-Should probably stop using SIGIO, we don't want to disturb the main thread. Just create a daemon thread.
-Stop using ThreadPoolExecutor for piping, but instead a daemon thread (how should handle exceptions? maybe signal to main thread? Or just print?)
-The debugger it server-independent. It can be instantiated without any client - just a pty.
-It's master fd is public, and a server (singleton as well) can read and write into that master fd.
-The server filters ctrl-X commands (and maybe other stuff?) before passing it to the debugger.
-The server can set_trace on the main thread by using a signal. Sigint should be used.
-
 Bug in pdb - if we are in a PEP475 function, ctrl c runs the siginthandler. But then the syscall
 is resumed, and no python code is run. When the user presses ctrl-c again, the handler runs again,
 but this time sys.trace is in place so the handler is debugged... Pdb doesn't allow us to send a sigint here.
@@ -451,6 +433,4 @@ The solution is probably to somehow prevent tracing of the handler... Doesn't so
 	- inejct
 	- if not --install and fail:
 		- int -m madbg test and offer to run madbg install: "Detected target interpreter (alds) doesn't seems to have madbg installed. Rerun with --install to first install madbg in the target interpreter"
-
-- Fabio Zadrozny
 """
