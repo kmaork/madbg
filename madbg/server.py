@@ -322,10 +322,11 @@ Next steps:
     - client cleanup doesn't completely reset terminal, when app exits not clean, client terminal is dead
     - ipython prs - do we need to patch? or maybe depend on a fork?
     - trying to attach to two threads in parallel (two threads asleep, c-c to both) - one gets stuck.
-    - ctrl c on debugee during debug shows --KeyboardInterrupt--, means we do register sigint handler
     - our own executors are showing up in the menu, hide them by keeping a list of them
     - skip menu if there is only one thread?
     - when writing ? in the terminal, "Object `` not found." is printed to stdout 
+    - once we set trace on a thread, maybe during continue we don't cancel the trace but just don't invoke the debugger,
+      then we don't have to reattach the thread
     - run in thread using ptrace - better than signal??
         signal: interfering with signal handlers
         ptrace: invoke subprocess, load dll
@@ -334,6 +335,7 @@ Next steps:
             the gil.
             do we have another approach?
     - get rid of piping
+    - signal.siginterrupt - use to attach to threads in syscalls?
     - use the new api for setting trace on other threads
     - user connects, gets main app - choose thread to debug
       to users can debug two separate threads at once

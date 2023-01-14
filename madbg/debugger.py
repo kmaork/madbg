@@ -68,6 +68,9 @@ class RemoteIPythonDebugger(TerminalPdb):
         self.term_output = Vt100_Output.from_pty(self.pty.slave_io)
         super().__init__(pt_session_options=dict(input=self.term_input, output=self.term_output,
                                                  message=self._get_prompt),
+                         # nosigint prevents the ipython debugger from registering the sigint handler both for
+                         # continue and during command execution, but when ipython doesn't register this handler
+                         # during command execution, pdb does
                          stdin=self.pty.slave_io, stdout=self.pty.slave_io, nosigint=True)
         self.use_rawinput = True
         self.clients: set[Client] = set()
