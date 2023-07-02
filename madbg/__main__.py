@@ -2,13 +2,18 @@ import sys
 from click import ClickException, group, argument, option, pass_context
 
 from madbg.client import connect_to_debugger
-from madbg.consts import DEFAULT_IP, DEFAULT_PORT, DEFAULT_CONNECT_TIMEOUT
+from madbg.consts import DEFAULT_ADDR, DEFAULT_CONNECT_TIMEOUT
 from madbg import run_with_debugging, attach_to_process
 
+# TODO
+DEFAULT_IP, DEFAULT_PORT = DEFAULT_ADDR
 port_argument = argument('port', type=int, default=DEFAULT_PORT)
 connect_timeout_option = option('-t', '--timeout', type=float, default=DEFAULT_CONNECT_TIMEOUT, show_default=True,
                                 help='Connection timeout in seconds')
 
+
+# TODO: allow addr instead of ip, port. Addr can be either a unix socket, ip:port, port, etc.
+# TODO: add madbg child command, that adds a sitecustomize to the pythonpath that starts madbg
 
 @group(context_settings=dict(help_option_names=['-h', '--help']))
 def cli():
@@ -21,7 +26,7 @@ def cli():
 @connect_timeout_option
 def connect(ip, port, timeout):
     try:
-        connect_to_debugger(ip, port, timeout=timeout)
+        connect_to_debugger((ip, port), timeout=timeout)
     except ConnectionRefusedError:
         raise ClickException('Connection refused - did you use the right port?')
 
@@ -49,7 +54,7 @@ def attach(pid, port, timeout):
 def run(context, bind_ip, port, run_as_module, py_file, no_post_mortem, use_set_trace):
     argv = [sys.argv[0], *context.args]
     run_with_debugging(py_file, run_as_module=run_as_module, argv=argv, use_post_mortem=not no_post_mortem,
-                       use_set_trace=use_set_trace, ip=bind_ip, port=port)
+                       use_set_trace=use_set_trace, addr=(bind_ip, port))
 
 
 if __name__ == '__main__':

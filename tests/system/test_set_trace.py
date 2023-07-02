@@ -9,7 +9,7 @@ from .utils import run_in_process, run_script_in_process, JOIN_TIMEOUT, run_clie
 
 def set_trace_script(port, times=1):
     for _ in range(times):
-        madbg.set_trace(port=port)
+        madbg.set_trace(addr=('127.0.0.1', port))
 
 
 def set_trace_and_expect_var_to_change_script(port) -> bool:
@@ -17,7 +17,7 @@ def set_trace_and_expect_var_to_change_script(port) -> bool:
     Set two vars to the same value, start the debugger, and return True if one of the vars has changed.
     """
     original_value = value_to_change = 0
-    madbg.set_trace(port=port)
+    madbg.set_trace(addr=('127.0.0.1', port))
     return original_value != value_to_change
 
 

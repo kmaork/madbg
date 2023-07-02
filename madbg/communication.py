@@ -1,45 +1,75 @@
-import pickle
-import fcntl
+from __future__ import annotations
 import os
 import struct
 from collections import defaultdict
-from functools import partial
-from asyncio import new_event_loop
-from io import BytesIO
-from typing import Dict, Set
-
-from .utils import opposite_dict
+from asyncio import new_event_loop, StreamReader, wait, FIRST_COMPLETED, Event, get_running_loop, StreamWriter
+from typing import Dict, Set, Optional
 
 MESSAGE_LENGTH_FMT = 'I'
+MESSAGE_LENGTH_LENGTH = struct.calcsize(MESSAGE_LENGTH_FMT)
+CHUNK_SIZE = 2 ** 12
+
+PipeDict = Dict[int, Set[int]]
 
 
-def set_nonblocking(fd):
-    flags = fcntl.fcntl(fd, fcntl.F_GETFL)
-    fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+async def read_into(reader: StreamReader, writer: StreamWriter, chunk_size=CHUNK_SIZE):
+    while True:
+        if reader.at_eof():
+            # TODO: raise EOFError()
+            break
+        data = await reader.read(chunk_size)
+        writer.write(data)
+        # TODO: bug in python
+        if hasattr(writer._protocol, '_drain_helper'):
+            await writer.drain()
 
 
-def blocking_read(fd, n):
-    io = BytesIO()
-    read_amount = 0
-    while read_amount < n:
-        data = os.read(fd, n - read_amount)
-        if not data:
-            raise IOError('FD closed before all bytes read')
-        read_amount += len(data)
-        io.write(data)
-    return io.getvalue()
+async def read_into_until_stopped(reader: StreamReader, writer: StreamWriter, done: Event):
+    loop = get_running_loop()
+    done_task = loop.create_task(done.wait())
+    read_task = loop.create_task(read_into(reader, writer))
+    finished, unfinished = await wait([done_task, read_task], return_when=FIRST_COMPLETED)
+    if done_task in finished:
+        for task in unfinished:
+            task.cancel()
+
+
+def read_new_data(fd: int, chunk_size=CHUNK_SIZE) -> bytearray:
+    data = bytearray()
+    try:
+        while not data:
+            new_data = os.read(fd, chunk_size)
+            if not new_data:
+                break
+            data.extend(new_data)
+    except OSError:
+        pass
+    return data
 
 
 class Piping:
-    def __init__(self, pipe_dict: Dict[int, Set[int]]):
+    # TODO: remove this class and replace with a protocol
+    def __init__(self, pipe_dict: Optional[PipeDict] = None):
+        super().__init__()
         self.buffers = defaultdict(bytes)
         self.loop = new_event_loop()
-        for src_fd, dest_fds in pipe_dict.items():
-            self.loop.add_reader(src_fd, partial(self._read, src_fd, dest_fds))
-            for dest_fd in dest_fds:
-                self.loop.add_writer(dest_fd, partial(self._write, dest_fd))
-        self.readers_to_writers = dict(pipe_dict)
-        self.writers_to_readers = opposite_dict(pipe_dict)
+        self.readers_to_writers = defaultdict(set)
+        self.writers_to_readers = defaultdict(set)
+        if pipe_dict is not None:
+            self.add_pipe(pipe_dict)
+
+    def add_pair(self, reader_fd: int, writer_fd: int):
+        if reader_fd not in self.readers_to_writers:
+            self.loop.add_reader(reader_fd, self._read, reader_fd)
+        if writer_fd not in self.writers_to_readers:
+            self.loop.add_writer(writer_fd, self._write, writer_fd)
+        self.readers_to_writers[reader_fd].add(writer_fd)
+        self.writers_to_readers[writer_fd].add(reader_fd)
+
+    def add_pipe(self, pipe_dict: PipeDict):
+        for reader_fd, writer_fds in pipe_dict.items():
+            for writer_fd in writer_fds:
+                self.add_pair(reader_fd, writer_fd)
 
     def _remove_writer(self, writer_fd):
         self.loop.remove_writer(writer_fd)
@@ -56,13 +86,10 @@ class Piping:
             if not writer_readers:
                 self._remove_writer(writer_fd)
 
-    def _read(self, src_fd, dest_fds):
-        try:
-            data = os.read(src_fd, 1024)
-        except OSError:
-            data = ''
+    def _read(self, src_fd):
+        data = read_new_data(src_fd)
         if data:
-            for dest_fd in dest_fds:
+            for dest_fd in self.readers_to_writers[src_fd]:
                 self.buffers[dest_fd] += data
         else:
             self._remove_reader(src_fd)
@@ -78,22 +105,3 @@ class Piping:
 
     def run(self):
         self.loop.run_forever()
-        # TODO: is this needed?
-        # for dest_fd, buffer in self.buffers.items():
-        #     while buffer:
-        #         buffer = buffer[os.write(dest_fd, buffer):]
-
-
-def send_message(sock, obj):
-    message = pickle.dumps(obj)
-    message_len = struct.pack(MESSAGE_LENGTH_FMT, len(message))
-    sock.sendall(message_len)
-    sock.sendall(message)
-
-
-def receive_message(sock):
-    len_len = struct.calcsize(MESSAGE_LENGTH_FMT)
-    len_bytes = blocking_read(sock, len_len)
-    message_len = struct.unpack(MESSAGE_LENGTH_FMT, len_bytes)[0]
-    message = blocking_read(sock, message_len)
-    return pickle.loads(message)

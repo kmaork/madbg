@@ -53,7 +53,7 @@ madbg.set_trace()
 ```
 Continue running the program until a client connects, then stop it and start a debugger:
 ```python
-madbg.set_trace_on_connect()
+madbg.start()
 ```
 After an exception has occurred, or in an exception context, start a debugger in the frame the exception was raised from:
 ```python
@@ -86,12 +86,11 @@ madbg connect 8.8.8.8 1337
 Madbg supports linux with python>=3.7.
 
 ## Possible effects
+What madbg avoids doing (that other solutions mostly don't):
+- Writing or reads from the debugee's stdio
+- Changing the SIGINT handler of the debugee
 
-What madbg does that might affect a debugged program:
-- Changes the pgid and sid of the debugged process
-- Changes the CTTY of the debugged process
-- Affects child processes in unknown ways (Not tested yet)
-
-What madbg doesn't do:
-- Writes or reads from stdio
-- Feeds your cat
+What madbg might do (that other solutions mostly won't):
+- Using `madbg attach` might cause a deadlock in debugees if they are mid-malloc, which is an open issue in pyinjector.
+  It is very uncommon, but still means you shouldn't use madbg in production.
+- Opens a socket

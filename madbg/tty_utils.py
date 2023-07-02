@@ -1,89 +1,50 @@
+from __future__ import annotations
+
+from io import TextIOWrapper
+
+from contextlib import contextmanager
+
 import errno
 import os
 import pty
 import struct
-from contextlib import contextmanager
+import tty
 from dataclasses import dataclass
-from multiprocessing.pool import Pool
-import signal
 import fcntl
-from typing import Optional
-
 import termios
+from functools import cached_property
+from typing import Tuple, ContextManager, TextIO
 
 
-def is_session_leader():
-    return os.getsid(0) == os.getpid()
+@dataclass
+class TTYConfig:
+    term_attrs: list
+    term_type: str
+    term_size: Tuple[int, int]
 
+    @classmethod
+    def get(cls, slave_fd: int) -> TTYConfig:
+        term_size = os.get_terminal_size(slave_fd)
+        return cls(term_attrs=termios.tcgetattr(slave_fd),
+                   # prompt toolkit will receive this string, and it can be 'unknown'
+                   term_type=os.environ.get("TERM", "unknown"),
+                   term_size=(term_size.lines, term_size.columns))
 
-def set_group_leader():
-    os.setpgid(0, 0)
-    return os.getpgid(0)
+    def _resize(self, slave_fd: int):
+        winsize = struct.pack("HHHH", *self.term_size, 0, 0)
+        fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, winsize)
 
+    def _set_tty_attrs(self, slave_fd: int, when=termios.TCSANOW):
+        IFLAG, OFLAG, CFLAG, LFLAG, ISPEED, OSPEED, CC = range(7)
+        tc_attrs = self.term_attrs[:]
+        current_attrs = termios.tcgetattr(slave_fd)
+        tc_attrs[CC] = current_attrs[CC]
+        termios.tcsetattr(slave_fd, when, tc_attrs)
 
-def make_sure_not_group_leader():
-    if os.getpgid(0) == os.getpid():
-        with Pool(1) as pool:
-            pgid = pool.apply(set_group_leader)
-            os.setpgid(0, pgid)
-
-
-def make_session_leader():
-    make_sure_not_group_leader()
-    os.setsid()
-
-
-@contextmanager
-def set_handler(sig, handler):
-    old = signal.signal(sig, handler)
-    try:
-        yield old
-    finally:
-        signal.signal(sig, old)
-
-
-def ignore_signal(sig):
-    return set_handler(sig, signal.SIG_IGN)
-
-
-def detach_ctty(ctty_fd):
-    # TODO: will children receive sighup as well?
-    # When a process detaches from a tty, it is sent the signals SIGHUP and then SIGCONT
-    with ignore_signal(signal.SIGHUP):
-        fcntl.ioctl(ctty_fd, termios.TIOCNOTTY)
-
-
-def attach_ctty(fd: int) -> bool:
-    try:
-        fcntl.ioctl(fd, termios.TIOCSCTTY, 1)
-        return True
-    except PermissionError:
-        return False
-
-
-def get_ctty_fd() -> Optional[int]:
-    """
-    If there is a controlling tty for this process, return a read+write fd to it.
-    Otherwise return None.
-    """
-    try:
-        return os.open(os.ctermid(), os.O_RDWR)
-    except OSError as e:
-        if e.errno == errno.ENXIO:
-            return None
-        raise
-
-
-def detach_current_ctty():
-    """ Detach from ctty if there is one """
-    ctty_fd = get_ctty_fd()
-    # If there is no ctty, ctty_fd is None and we don't do anything
-    if ctty_fd is not None:
-        if is_session_leader():
-            detach_ctty(ctty_fd)
-        else:
-            make_session_leader()
-        os.close(ctty_fd)
+    def apply(self, slave_fd: int):
+        self._resize(slave_fd)
+        # TODO: remove or fix
+        # self._set_tty_attrs(slave_fd)
 
 
 @dataclass
@@ -92,47 +53,49 @@ class PTY:
     slave_fd: int
     _closed: bool = False
 
-    def resize(self, rows, cols):
-        winsize = struct.pack("HHHH", rows, cols, 0, 0)
-        fcntl.ioctl(self.slave_fd, termios.TIOCSWINSZ, winsize)
+    @cached_property
+    def slave_io(self) -> TextIO:
+        # The only way to open a non-seekable fd for both reading and writing is with buffering=0
+        # Can only open in binary mode when buffering=0
+        # If there's any issue with that, we can always revert back to having slave_reader and slave_writer.
+        # Adding TextIOWrapper until refactor
+        # TODO: return BinaryIO? change usages
+        return TextIOWrapper(os.fdopen(self.slave_fd, 'r+b', buffering=0, closefd=False), write_through=True)
+
+    @cached_property
+    def master_io(self) -> TextIO:
+        return TextIOWrapper(os.fdopen(self.master_fd, 'r+b', buffering=0, closefd=False), write_through=True)
 
     def close(self):
         if not self._closed:
-            with ignore_signal(signal.SIGHUP):
-                os.close(self.master_fd)
+            termios.tcdrain(self.slave_fd)
+            os.close(self.master_fd)
+            os.close(self.slave_fd)
             self._closed = True
 
-    def set_tty_attrs(self, tc_attrs, when=termios.TCSANOW):
-        return
-        IFLAG = 0
-        OFLAG = 1
-        CFLAG = 2
-        LFLAG = 3
-        ISPEED = 4
-        OSPEED = 5
-        CC = 6
-        tc_attrs = tc_attrs[:]
-        current_attrs = termios.tcgetattr(fd)
-        tc_attrs[CC] = current_attrs[termios.CC]
-        termios.tcsetattr(self.slave_fd, when, tc_attrs)
+    def set_raw(self):
+        tty.setraw(self.slave_fd, termios.TCSANOW)
 
-    def make_ctty(self) -> bool:
-        detach_current_ctty()
-        return attach_ctty(self.slave_fd)
+    @classmethod
+    def new(cls) -> PTY:
+        master_fd, slave_fd = pty.openpty()
+        return cls(master_fd, slave_fd)
 
     @classmethod
     @contextmanager
-    def open(cls):
-        master_fd, slave_fd = pty.openpty()
-        self = cls(master_fd, slave_fd)
+    def open(cls) -> ContextManager[PTY]:
+        open_pty = cls.new()
         try:
-            yield self
+            yield open_pty
         finally:
-            self.close()
+            open_pty.close()
 
 
-def print_to_ctty(string):
+def print_to_ctty(*args):
     """ If there is a ctty, print the given string to it. """
-    ctty_fd = get_ctty_fd()
-    if ctty_fd is not None:
-        print(string, file=os.fdopen(ctty_fd, 'w'))
+    try:
+        with open(os.ctermid(), 'w') as tty:
+            print(*args, file=tty)
+    except OSError as e:
+        if e.errno != errno.ENXIO:
+            raise

@@ -1,92 +1,191 @@
 from __future__ import annotations
+
+from dataclasses import dataclass
+
 import runpy
 import os
-import socket
 import sys
-import traceback
 from bdb import BdbQuit
 from contextlib import contextmanager, nullcontext
-from termios import tcdrain
-from typing import Optional, ContextManager
+from inspect import currentframe
+from sys import _current_frames
 
+from prompt_toolkit.application import create_app_session
+from threading import Thread, RLock
+from typing import ContextManager, Callable, Any
+from hypno import run_in_thread
+from prompt_toolkit import Application, ANSI
+from prompt_toolkit.formatted_text import PygmentsTokens
+from prompt_toolkit.input.vt100 import Vt100Input
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.layout import Layout, HSplit, WindowAlign
+from prompt_toolkit.output.vt100 import Vt100_Output
 from IPython.terminal.debugger import TerminalPdb
 from IPython.terminal.interactiveshell import TerminalInteractiveShell
-from prompt_toolkit.input.vt100 import Vt100Input
-from prompt_toolkit.output.vt100 import Vt100_Output
-from inspect import currentframe
+from prompt_toolkit.widgets import Label
+from pygments.token import Token
 
-from .utils import preserve_sys_state, run_thread
-from .tty_utils import print_to_ctty, PTY
-from .communication import receive_message, Piping
+from .utils import preserve_sys_state
+from .tty_utils import PTY, TTYConfig, print_to_ctty
+
+
+def get_running_app(debugger):
+    kb = KeyBindings()
+
+    @kb.add('c-c')
+    def handle_ctrl_c(_event):
+        pt_app.exit()
+        debugger.attach()
+
+    @kb.add('q')
+    def handle_q(_event):
+        pt_app.exit()
+        debugger.quit()
+
+    def get_stack(frame):
+        stack = []
+        while frame is not None:
+            stack.append(frame)
+            frame = frame.f_back
+        return reversed(stack)
+
+    def get_stack_trace():
+        debugger.curframe = None
+        frame = _current_frames()[debugger.thread.ident]
+        return ANSI(''.join(debugger.format_stack_entry((f, f.f_lineno)) for f in get_stack(frame)))
+
+    pt_app = Application(
+        layout=Layout(HSplit([
+            Label(f'{debugger.thread.name} - running', align=WindowAlign.CENTER, style='bg:#055515'),
+            Label(f'Press Ctrl-C to attach or q to quit\n', align=WindowAlign.CENTER),
+            Label(get_stack_trace)
+        ])),
+        key_bindings=kb,
+        input=debugger.term_input,
+        output=debugger.term_output,
+        erase_when_done=True,
+        refresh_interval=0.5,
+    )
+    return pt_app
+
+
+@dataclass
+class Client:
+    config: TTYConfig
+    on_detach: Callable[[], Any]
+
+    def __hash__(self):
+        return id(self)
+
+    def __eq__(self, other):
+        return self is other
 
 
 class RemoteIPythonDebugger(TerminalPdb):
-    """
-    Initializes IPython's TerminalPdb with stdio from a pty.
-    As TerminalPdb uses prompt_toolkit instead of the builtin input(),
-    we can use it to allow line editing and tab completion for files other than stdio (in this case, the pty).
-    Because we need to provide the stdin and stdout params to the __init__, and they require a connection to the client,
-    """
     _DEBUGGING_GLOBAL = 'DEBUGGING_WITH_MADBG'
-    _CURRENT_INSTANCE = None
 
-    @classmethod
-    def _get_current_instance(cls) -> Optional[RemoteIPythonDebugger]:
-        return cls._CURRENT_INSTANCE
-
-    @classmethod
-    def _set_current_instance(cls, new: Optional[RemoteIPythonDebugger]) -> None:
-        cls._CURRENT_INSTANCE = new
-
-    def __init__(self, stdin, stdout, term_type):
+    def __init__(self, thread: Thread, pty: PTY):
+        self.pty = pty
         # A patch until https://github.com/ipython/ipython/issues/11745 is solved
         TerminalInteractiveShell.simple_prompt = False
-        term_input = Vt100Input(stdin)
-        term_output = Vt100_Output.from_pty(stdout, term_type)
-        super().__init__(pt_session_options=dict(input=term_input, output=term_output), stdin=stdin, stdout=stdout)
+        self.term_input = Vt100Input(self.pty.slave_io)
+        self.term_output = Vt100_Output.from_pty(self.pty.slave_io)
+        super().__init__(pt_session_options=dict(input=self.term_input, output=self.term_output,
+                                                 message=self._get_prompt),
+                         # nosigint prevents the ipython debugger from registering the sigint handler both for
+                         # continue and during command execution, but when ipython doesn't register this handler
+                         # during command execution, pdb does
+                         stdin=self.pty.slave_io, stdout=self.pty.slave_io, nosigint=True)
         self.use_rawinput = True
-        self.done_callback = None
+        self.clients: set[Client] = set()
+        # TODO: this should be intercepted on the client side to allow force quitting the client
+        self.pt_app.key_bindings.remove("c-\\")
+        self.thread = thread
+        # todo: run main debugger prompt in our loop
+        self.running_app = get_running_app(self)
+        self.check_debugging_global = False
+        self.clients_lock = RLock()
 
-    def trace_dispatch(self, frame, event, arg, check_debugging_global=False):
-        """
-        Overriding super to allow the check_debugging_global and done_callback args.
+    def _get_prompt(self):
+        return PygmentsTokens([(Token.Prompt, f'{self.thread.name}> ')])
 
-        :param check_debugging_global: Whether to start debugging only if _DEBUGGING_GLOBAL is in the globals.
-        :param done_callback: a callable to be called when the debug session ends.
+    def attach(self):
+        def set():
+            f = currentframe().f_back.f_back.f_back
+            f.f_globals[self._DEBUGGING_GLOBAL] = True
+            self.check_debugging_global = True
+            self.set_trace(f)
+
+        # If this gets stuck, it's probably because the debugger kicks in before the injection finishes.
+        # The debugging global must be pushed to the right frame to prevent that.
+        run_in_thread(self.thread, set)
+
+    def _configure_tty(self):
+        with self.clients_lock:
+            if len(self.clients) == 1:
+                tty_config = next(iter(self.clients)).config
+                tty_config.apply(self.pty.slave_fd)
+                self.term_output.term = tty_config.term_type
+                self.term_input.term = tty_config.term_type
+
+    def add_client(self, client: Client):
+        with self.clients_lock:
+            self.clients.add(client)
+            self._configure_tty()
+            self._run_running_app()
+
+    def remove_client(self, client: Client):
+        with self.clients_lock:
+            if client in self.clients:
+                self.clients.remove(client)
+                self._configure_tty()
+                if not self.clients:
+                    # TODO: can we use self.stop_here or self._set_stopinfo (from ipython code) instead of the debugging global?
+                    if self.pt_app.app.is_running:
+                        self.pt_app.app.exit('quit')
+                    if self.running_app.is_running:
+                        self.running_app.exit()
+
+    def preloop(self):
+        if not self.clients:
+            print_to_ctty("Waiting for client to connect")
+
+    def trace_dispatch(self, frame, event, arg):
         """
-        if check_debugging_global:
+        Overriding super to support check_debugging_global and on_done.
+        """
+        if self.check_debugging_global:
             if self._DEBUGGING_GLOBAL in frame.f_globals:
-                self.set_trace(frame)
+                self.check_debugging_global = False
+                del frame.f_globals[self._DEBUGGING_GLOBAL]
             else:
-                return None
+                return self.trace_dispatch
         bdb_quit = False
         try:
-            return super().trace_dispatch(frame, event, arg)
+            s = super().trace_dispatch(frame, event, arg)
+            return s
         except BdbQuit:
             bdb_quit = True
         finally:
             if self.quitting or bdb_quit:
-                self._on_done()
+                self.quit()
 
-    def _on_done(self):
-        if self.done_callback is not None:
-            self.done_callback()
-            self.done_callback = None
+    def quit(self):
+        with self.clients_lock:
+            for client in self.clients:
+                client.on_detach()
+            self.clients.clear()
 
-    def set_trace(self, frame=None, done_callback=None):
-        """ Overriding super to add the done_callback argument, allowing cleanup after a debug session """
-        if done_callback is not None:
-            # set_trace was called again without the previous one exiting -
-            # happens on continue -> ctrl-c
-            self.done_callback = done_callback
-        if frame is None:
-            frame = currentframe().f_back
-        return super().set_trace(frame)
+    def _run_running_app(self, in_new_thread=True):
+        if in_new_thread:
+            self.thread_executor.submit(self._run_running_app, in_new_thread=False)
+        else:
+            with create_app_session():
+                self.running_app.run()
 
     def do_continue(self, arg):
-        """ Overriding super to add a print """
-        if not self.nosigint:
-            print('Resuming program, press Ctrl-C to relaunch debugger.', file=self.stdout)
+        self._run_running_app()
+        # This doesn't register a SIGINT handler as we set self.nosigint to True
         return super().do_continue(arg)
 
     do_c = do_cont = do_continue
@@ -102,16 +201,20 @@ class RemoteIPythonDebugger(TerminalPdb):
             sys.argv = argv
             if not run_as_module:
                 sys.path[0] = os.path.dirname(python_file)
-            with self.debug(check_debugging_global=True) if set_trace else nullcontext():
-                if run_as_module:
-                    runpy.run_module(python_file, alter_sys=True, run_name=run_name, init_globals=globals)
-                else:
-                    runpy.run_path(python_file, run_name=run_name, init_globals=globals)
+            self.check_debugging_global = True
+            try:
+                with self.debug() if set_trace else nullcontext():
+                    if run_as_module:
+                        runpy.run_module(python_file, alter_sys=True, run_name=run_name, init_globals=globals)
+                    else:
+                        runpy.run_path(python_file, run_name=run_name, init_globals=globals)
+            finally:
+                self.check_debugging_global = False
 
     @contextmanager
-    def debug(self, check_debugging_global=False) -> ContextManager:
+    def debug(self) -> ContextManager:
         self.reset()
-        sys.settrace(lambda *args: self.trace_dispatch(*args, check_debugging_global=check_debugging_global))
+        sys.settrace(lambda *args: self.trace_dispatch(*args))
         try:
             yield
         except BdbQuit:
@@ -119,67 +222,3 @@ class RemoteIPythonDebugger(TerminalPdb):
         finally:
             self.quitting = True
             sys.settrace(None)
-
-    @classmethod
-    @contextmanager
-    def start(cls, sock_fd: int) -> ContextManager[RemoteIPythonDebugger]:
-        # TODO: just add to pipe list
-        assert cls._get_current_instance() is None
-        term_data = receive_message(sock_fd)
-        term_attrs, term_type, term_size = term_data['term_attrs'], term_data['term_type'], term_data['term_size']
-        with PTY.open() as pty:
-            pty.resize(term_size[0], term_size[1])
-            pty.set_tty_attrs(term_attrs)
-            pty.make_ctty()
-            piping = Piping({sock_fd: {pty.master_fd}, pty.master_fd: {sock_fd}})
-            with run_thread(piping.run):
-                slave_reader = os.fdopen(pty.slave_fd, 'r')
-                slave_writer = os.fdopen(pty.slave_fd, 'w')
-                try:
-                    instance = cls(slave_reader, slave_writer, term_type)
-                    cls._set_current_instance(instance)
-                    yield instance
-                except Exception:
-                    print(traceback.format_exc(), file=slave_writer)
-                    raise
-                finally:
-                    cls._set_current_instance(None)
-                    print('Closing connection', file=slave_writer, flush=True)
-                    tcdrain(pty.slave_fd)
-                    slave_writer.close()
-
-    @classmethod
-    @contextmanager
-    def get_server_socket(cls, ip: str, port: int) -> ContextManager[socket.socket]:
-        """
-        Return a new server socket for client to connect to. The caller is responsible for closing it.
-        """
-        server_socket = socket.socket()
-        server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, True)
-        server_socket.bind((ip, port))
-        try:
-            yield server_socket
-        finally:
-            server_socket.close()
-
-    @classmethod
-    @contextmanager
-    def start_from_new_connection(cls, sock: socket.socket) -> ContextManager[RemoteIPythonDebugger]:
-        print_to_ctty(f'Debugger client connected from {sock.getpeername()}')
-        try:
-            with cls.start(sock.fileno()) as debugger:
-                yield debugger
-        finally:
-            sock.close()
-
-    @classmethod
-    def connect_and_start(cls, ip: str, port: int) -> ContextManager[RemoteIPythonDebugger]:
-        # TODO: get rid of context managers at some level - nobody is going to use with start() anyway
-        current_instance = cls._get_current_instance()
-        if current_instance is not None:
-            return nullcontext(current_instance)
-        with cls.get_server_socket(ip, port) as server_socket:
-            server_socket.listen(1)
-            print_to_ctty(f'Waiting for debugger client on {ip}:{port}')
-            sock, _ = server_socket.accept()
-        return cls.start_from_new_connection(sock)

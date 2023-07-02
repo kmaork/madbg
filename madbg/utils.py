@@ -1,11 +1,10 @@
-import atexit
 import sys
-import threading
-from collections import defaultdict
-from concurrent.futures.thread import ThreadPoolExecutor
-from contextlib import contextmanager, ExitStack
-from typing import Dict, Any, Set
+from threading import RLock
+from contextlib import contextmanager
+from dataclasses import dataclass
+from typing import Any, Generic, TypeVar
 
+T = TypeVar('T')
 
 @contextmanager
 def preserve_sys_state():
@@ -14,40 +13,55 @@ def preserve_sys_state():
     try:
         yield
     finally:
-        sys.argv = sys_argv
-        sys.path = sys_path
+        sys.argv[:] = sys_argv
+        sys.path[:] = sys_path
 
 
-def register_atexit(callback, *args, **kwargs):
-    if sys.version_info >= (3, 9):
-        # Since python3.9, ThreadPoolExecutor threads are non-daemon, which means they are joined before atexit
-        # hooks run - https://bugs.python.org/issue39812
-        threading._register_atexit(callback, *args, **kwargs)
-    else:
-        atexit.register(callback, *args, **kwargs)
+class Handlers:
+    def __init__(self):
+        self.keys_to_funcs = {}
+
+    def register(self, key):
+        def decorator(func):
+            self.keys_to_funcs[key] = func
+            return func
+
+        return decorator
+
+    def __get__(self, instance, owner):
+        if instance is None:
+            return self
+        return BoundHandlers(self, instance, owner)
 
 
-def use_context(context_manager, exit_stack=None):
-    if exit_stack is None:
-        exit_stack = ExitStack()
-        register_atexit(exit_stack.close)
-    context_value = exit_stack.enter_context(context_manager)
-    return context_value, exit_stack
+@dataclass
+class BoundHandlers:
+    handlers: Handlers
+    instance: Any
+    owner: Any
+
+    def __call__(self, key):
+        self.handlers.keys_to_funcs[key](self.instance, key)
+
+    def __iter__(self):
+        return ((key, func.__get__(self.instance, self.owner)) for key, func in self.handlers.keys_to_funcs.items())
 
 
-@contextmanager
-def run_thread(func, *args, **kwargs):
-    with ThreadPoolExecutor(1) as executor:
-        future = executor.submit(func, *args, **kwargs)
-        try:
-            yield future
-        finally:
-            future.result()
+class Locked(Generic[T]):
+    def __init__(self, value: T, lock: RLock = None):
+        if lock is None:
+            lock = RLock()
+        self._value = value
+        self._lock = lock
 
+    def set(self, new_val: T):
+        with self:
+            self._value = new_val
 
-def opposite_dict(dict_: Dict[Any, Set[Any]]) -> Dict[Any, Set[Any]]:
-    opposite = defaultdict(set)
-    for key, values in dict_.items():
-        for value in values:
-            opposite[value].add(key)
-    return opposite
+    # TODO: make generic
+    def __enter__(self):
+        self._lock.acquire()
+        return self._value
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self._lock.release()
