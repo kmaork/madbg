@@ -1,23 +1,51 @@
-import atexit
 import os
 import pty
 import select
 import socket
-from concurrent.futures import ProcessPoolExecutor
-from contextlib import closing
+import multiprocessing as mp
+from contextlib import closing, _GeneratorContextManager
+from functools import wraps
 from pathlib import Path
 
 from madbg import client
 from madbg.consts import STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO
 from madbg.tty_utils import PTY
 
-JOIN_TIMEOUT = 5
+JOIN_TIMEOUT = 10
 CONNECT_TIMEOUT = 5
 SCRIPTS_PATH = Path(__file__).parent / 'scripts'
 
+# forked subprocesses don't run exitfuncs
+mp_context = mp.get_context("spawn")
 
+
+class FinishableGeneratorContextManager(_GeneratorContextManager):
+    def finish(self):
+        with self as result:
+            return result
+
+
+def finishable_contextmanager(func):
+    @wraps(func)
+    def helper(*args, **kwds):
+        return FinishableGeneratorContextManager(func, args, kwds)
+    return helper
+
+
+@finishable_contextmanager
 def run_in_process(func, *args, **kwargs):
-    return ProcessPoolExecutor(1).submit(func, *args, **kwargs)
+    pool = mp_context.Pool(1)
+    apply_result = pool.apply_async(func, args, kwargs)
+    pool.close()
+    try:
+        yield apply_result
+    except:
+        pool.terminate()
+        raise
+    else:
+        # Wait for the result and raise an error if failed
+        apply_result.get(JOIN_TIMEOUT)
+        pool.join()
 
 
 def _run_script(script, start_with_ctty, args, kwargs):
@@ -25,10 +53,7 @@ def _run_script(script, start_with_ctty, args, kwargs):
     Meant to be called inside a python subprocess, do NOT call directly.
     """
     enter_pty(start_with_ctty)
-    result = script(*args, **kwargs)
-    # Python-spawned subprocesses do not call exit funcs - https://stackoverflow.com/q/34506638/2907819
-    atexit._run_exitfuncs()
-    return result
+    return script(*args, **kwargs)
 
 
 def run_script_in_process(script, start_with_ctty, *args, **kwargs):

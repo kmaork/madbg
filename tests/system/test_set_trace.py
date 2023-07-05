@@ -1,13 +1,14 @@
 import madbg
-from unittest.mock import Mock
 from pytest import raises
 
 from madbg.debugger import RemoteIPythonDebugger
 
-from .utils import run_in_process, run_script_in_process, JOIN_TIMEOUT, run_client
+from .utils import run_in_process, run_script_in_process, run_client
 
 
-def set_trace_script(port, times=1):
+def set_trace_script(port, times=1, debugger_fails=False):
+    if debugger_fails:
+        RemoteIPythonDebugger.__init__ = lambda *a, **k: 1 / 0
     for _ in range(times):
         madbg.set_trace(port=port)
 
@@ -22,38 +23,27 @@ def set_trace_and_expect_var_to_change_script(port) -> bool:
 
 
 def test_set_trace(port, start_debugger_with_ctty):
-    debugger_future = run_script_in_process(set_trace_and_expect_var_to_change_script, start_debugger_with_ctty, port)
-    client_future = run_in_process(run_client, port, b'value_to_change += 1\nc\n')
-    assert debugger_future.result(JOIN_TIMEOUT)
-    client_output = client_future.result(JOIN_TIMEOUT)
-    assert b'Closing connection' in client_output
+    with run_script_in_process(set_trace_and_expect_var_to_change_script, start_debugger_with_ctty, port):
+        assert b'Closing connection' in run_in_process(run_client, port, b'value_to_change += 1\nc\n').finish().get(0)
 
 
 def test_set_trace_and_connect_twice(port, start_debugger_with_ctty):
-    debugger_future = run_script_in_process(set_trace_script, start_debugger_with_ctty, port, 2)
-    assert b'Closing connection' in run_in_process(run_client, port, b'q\n').result(JOIN_TIMEOUT)
-    assert b'Closing connection' in run_in_process(run_client, port, b'q\n').result(JOIN_TIMEOUT)
-    debugger_future.result(JOIN_TIMEOUT)
+    with run_script_in_process(set_trace_script, start_debugger_with_ctty, port, 2):
+        assert b'Closing connection' in run_in_process(run_client, port, b'q\n').finish().get(0)
+        assert b'Closing connection' in run_in_process(run_client, port, b'q\n').finish().get(0)
 
 
 def test_set_trace_twice_and_continue(port, start_debugger_with_ctty):
-    debugger_future = run_script_in_process(set_trace_script, start_debugger_with_ctty, port, 2)
-    assert b'Closing connection' in run_in_process(run_client, port, b'c\nq\n').result(JOIN_TIMEOUT)
-    debugger_future.result(JOIN_TIMEOUT)
+    with run_script_in_process(set_trace_script, start_debugger_with_ctty, port, 2):
+        assert b'Closing connection' in run_in_process(run_client, port, b'c\nq\n').finish().get(0)
 
 
 def test_set_trace_and_quit_debugger(port, start_debugger_with_ctty):
-    debugger_future = run_script_in_process(set_trace_script, start_debugger_with_ctty, port)
-    client_future = run_in_process(run_client, port, b'q\n')
-    debugger_future.result(JOIN_TIMEOUT)
-    client_future.result(JOIN_TIMEOUT)
+    with run_script_in_process(set_trace_script, start_debugger_with_ctty, port):
+        run_in_process(run_client, port, b'q\n').finish()
 
 
 def test_set_trace_with_failing_debugger(port, start_debugger_with_ctty, monkeypatch):
-    monkeypatch.setattr(RemoteIPythonDebugger, '__init__', Mock(side_effect=lambda *a, **k: 1 / 0))
-    debugger_future = run_script_in_process(set_trace_script, start_debugger_with_ctty, port)
-    client_future = run_in_process(run_client, port, b'bla\n')
     with raises(ZeroDivisionError):
-        debugger_future.result(JOIN_TIMEOUT)
-    client_output = client_future.result(JOIN_TIMEOUT)
-    assert ZeroDivisionError.__name__.encode() in client_output
+        with run_script_in_process(set_trace_script, start_debugger_with_ctty, port, debugger_fails=True) as script_result:
+            assert ZeroDivisionError.__name__.encode() in run_in_process(run_client, port, b'bla\n').finish().get(0)
