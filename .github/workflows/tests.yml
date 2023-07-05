@@ -2,8 +2,13 @@ name: Tests
 
 on:
   workflow_dispatch:
+    inputs:
+      deploy:
+        description: 'Release this branch'
+        required: false
+        type: boolean
   release:
-    types: [created]
+    types: [ created ]
   push:
   pull_request:
 
@@ -11,8 +16,9 @@ jobs:
   test_manylinux:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.7", "3.8", "3.9", "3.10"]
+        python-version: ["3.7", "3.8", "3.9", "3.10", "3.11"]
     steps:
       - uses: actions/checkout@v2
       - name: Set up Python ${{ matrix.python-version }}
@@ -20,21 +26,14 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install dependencies
-        run: pip install tox tox-gh-actions tox-wheel
-      - name: Test sdist with tox
+        run: pip install tox==4.6.3 tox-gh==1.2.0
+      - name: Test with tox
         run: python -m tox
-      - name: Upload sdist
+      - name: Upload dists
         uses: actions/upload-artifact@v2
         with:
           name: dist
-          path: .tox/dist/*
-      - name: Test wheel with tox
-        run: python -m tox --wheel
-      - name: Upload wheel
-        uses: actions/upload-artifact@v2
-        with:
-          name: dist
-          path: .tox/dist/*
+          path: .tox/.pkg/dist/*
 
   test_alpine:
     runs-on: ubuntu-latest
@@ -47,6 +46,7 @@ jobs:
           - "python:3.8-alpine"
           - "python:3.9-alpine"
           - "python:3.10-alpine"
+          - "python:3.11-alpine"
     steps:
       - name: Install packages
         # git needed for checkout
@@ -55,12 +55,12 @@ jobs:
         with:
           submodules: true
       - name: Install dependencies
-        run: pip install tox tox-gh-actions
-      - name: Test sdist with tox
+        run: pip install tox==4.6.3 tox-gh==1.2.0
+      - name: Test with tox
         run: python -m tox
 
   publish:
-    if: github.event_name == 'release' && github.event.action == 'created'
+    if: (github.event_name == 'release' && github.event.action == 'created') || inputs.deploy
     needs: [test_manylinux, test_alpine]
     runs-on: ubuntu-latest
     steps:

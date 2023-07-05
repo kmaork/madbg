@@ -1,8 +1,7 @@
-import time
 from pytest import raises
 from madbg import run_with_debugging
 
-from .utils import run_script_in_process, JOIN_TIMEOUT, SCRIPTS_PATH, run_in_process, run_client
+from .utils import run_script_in_process, SCRIPTS_PATH, run_in_process, run_client
 
 
 def run_divide_with_zero_with_debugging_script(port, post_mortem, set_trace):
@@ -11,20 +10,13 @@ def run_divide_with_zero_with_debugging_script(port, post_mortem, set_trace):
 
 
 def test_run_with_debugging_with_post_mortem(port, start_debugger_with_ctty):
-    debugger_future = run_script_in_process(run_divide_with_zero_with_debugging_script, start_debugger_with_ctty, port,
-                                            set_trace=False, post_mortem=True)
-    time.sleep(1)
-    assert not debugger_future.done()
-    client_future = run_in_process(run_client, port, b'c\n')
     with raises(ZeroDivisionError):
-        debugger_future.result(JOIN_TIMEOUT)
-    client_future.result(JOIN_TIMEOUT)
+        with run_script_in_process(run_divide_with_zero_with_debugging_script, start_debugger_with_ctty, port,
+                                   set_trace=False, post_mortem=True):
+            run_in_process(run_client, port, b'c\n').finish()
 
 
 def test_run_with_debugging_with_set_trace(port, start_debugger_with_ctty):
-    debugger_future = run_script_in_process(run_divide_with_zero_with_debugging_script, start_debugger_with_ctty, port,
-                                            set_trace=True, post_mortem=False)
-    assert not debugger_future.done()
-    client_future = run_in_process(run_client, port, b'n\nn\nyo = 0\nc\n')
-    debugger_future.result(JOIN_TIMEOUT)
-    client_future.result(JOIN_TIMEOUT)
+    with run_script_in_process(run_divide_with_zero_with_debugging_script, start_debugger_with_ctty, port,
+                                            set_trace=True, post_mortem=False):
+        run_in_process(run_client, port, b'n\nn\nyo = 0\nc\n').finish()

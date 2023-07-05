@@ -22,7 +22,7 @@ def cli():
 def connect(ip, port, timeout):
     try:
         connect_to_debugger(ip, port, timeout=timeout)
-    except ConnectionRefusedError:
+    except (ConnectionRefusedError, TimeoutError):
         raise ClickException('Connection refused - did you use the right port?')
 
 
