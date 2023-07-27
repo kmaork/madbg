@@ -30,6 +30,9 @@ Or
 import madbg
 madbg.attach_to_process(pid)
 ```
+> **Warning**  
+>  - Attaching on linux could potentially deadlock the target process. Not recommneded for use in production environments yet.
+>  - `madbg` has to be installed in the target process' interpreter for `attach` to work.
 
 ### Starting a debugger
 #### Using the CLI
