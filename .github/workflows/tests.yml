@@ -20,9 +20,9 @@ jobs:
       matrix:
         python-version: ["3.8", "3.9", "3.10", "3.11"]
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v2
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install dependencies
@@ -30,7 +30,9 @@ jobs:
       - name: Test with tox
         run: python -m tox
       - name: Upload dists
-        uses: actions/upload-artifact@v2
+        # Artifacts are immutable since v4, so only one matrix job may upload "dist"
+        if: matrix.python-version == '3.11'
+        uses: actions/upload-artifact@v4
         with:
           name: dist
           path: .tox/.pkg/dist/*
@@ -50,7 +52,7 @@ jobs:
       - name: Install packages
         # git needed for checkout
         run: apk add git
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
         with:
           submodules: true
       - name: Install dependencies
@@ -64,7 +66,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@v4.1.7
+        uses: actions/download-artifact@v4
         with:
           name: dist
           path: dist
