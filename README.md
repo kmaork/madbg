@@ -30,6 +30,9 @@ Or
 import madbg
 madbg.attach_to_process(pid)
 ```
+> **Warning**  
+>  - Attaching on linux could potentially deadlock the target process. Not recommneded for use in production environments yet.
+>  - `madbg` has to be installed in the target process' interpreter for `attach` to work.
 
 ### Starting a debugger
 #### Using the CLI
@@ -83,7 +86,7 @@ madbg connect 8.8.8.8 1337
 ```
 ## Platforms
 
-Madbg supports linux with python>=3.7.
+Madbg supports linux with python>=3.8.
 
 ## Possible effects
 What madbg avoids doing (that other solutions mostly don't):
