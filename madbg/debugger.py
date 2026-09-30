@@ -119,6 +119,7 @@ class RemoteIPythonDebugger(TerminalPdb):
         # todo: run main debugger prompt in our loop
         self.running_app = get_running_app(self)
         self.check_debugging_global = False
+        self.pt_app.prompt = self._wrap_prompt(self.pt_app.prompt)
         self.clients_lock = RLock()
         self.clients_changed = Condition(self.clients_lock)
         self.interacting = False
@@ -126,6 +127,20 @@ class RemoteIPythonDebugger(TerminalPdb):
         # The clients to detach when quitting, None means all
         self.clients_to_detach: Optional[set[Client]] = None
         self.post_mortem_message = None
+
+    def _wrap_prompt(self, prompt):
+        """ Wrapping the prompt itself, as the method IPython calls it from differs between versions """
+        def exit_if_no_clients():
+            # The last client might have left before this prompt started, while it couldn't be exited
+            with self.clients_lock:
+                if not self.clients:
+                    self.pt_app.app.exit(result='quit')
+
+        def wrapper(*args, **kwargs):
+            with create_app_session():
+                return prompt(*args, pre_run=exit_if_no_clients, **kwargs)
+
+        return wrapper
 
     def _get_prompt(self):
         return PygmentsTokens([(Token.Prompt, f'{self.thread.name}> ')])
@@ -172,16 +187,6 @@ class RemoteIPythonDebugger(TerminalPdb):
                         self.clients_to_detach = set()
                     exit_app(self.pt_app.app, 'quit')
                     exit_app(self.running_app)
-
-    def _prompt(self):
-        def exit_if_no_clients():
-            # The last client might have left before this prompt started, while it couldn't be exited
-            with self.clients_lock:
-                if not self.clients:
-                    self.pt_app.app.exit(result='quit')
-
-        with create_app_session():
-            return self.pt_app.prompt(pre_run=exit_if_no_clients)
 
     def interaction(self, frame, traceback):
         try:

@@ -58,14 +58,15 @@ def run_in_thread(thread: Thread, func: Callable[[], Any]):
     try:
         # A process can't ptrace its own threads, so a helper process does the injection
         injector = subprocess.Popen([sys.executable, '-c', INJECTOR_CODE, str(thread.native_id), code],
-                                    stdin=subprocess.PIPE)
+                                    stdin=subprocess.PIPE, stderr=subprocess.PIPE)
         _set_ptracer(injector.pid)
         try:
-            injector.communicate(b'\n')
+            _, error = injector.communicate(b'\n')
         finally:
             _set_ptracer(0)
-        if injector.returncode != 0:
-            raise RuntimeError(f'Failed injecting code into thread {thread.name}')
+        # The injector can fail after injecting, e.g. when it can't unload the injected library under musl
+        if injector.returncode != 0 and not command.done.is_set():
+            raise RuntimeError(f'Failed injecting code into thread {thread.name}:\n{error.decode(errors="replace")}')
         return command.get_result()
     finally:
         del THREAD_COMMANDS[key]
