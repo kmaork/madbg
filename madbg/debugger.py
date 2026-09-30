@@ -11,9 +11,9 @@ from inspect import currentframe
 from sys import _current_frames
 
 from prompt_toolkit.application import create_app_session
-from threading import Thread, RLock
+from threading import Thread, RLock, Condition
 from typing import ContextManager, Callable, Any
-from hypno import run_in_thread
+from .threads import run_in_thread
 from prompt_toolkit import Application, ANSI
 from prompt_toolkit.formatted_text import PygmentsTokens
 from prompt_toolkit.input.vt100 import Vt100Input
@@ -27,6 +27,17 @@ from pygments.token import Token
 
 from .utils import preserve_sys_state
 from .tty_utils import PTY, TTYConfig, print_to_ctty
+
+
+def exit_app(app: Application, *args):
+    """ Thread-safely exit the given app if it is running and wasn't asked to exit already """
+    def exit():
+        if app.is_running and app.future is not None and not app.future.done():
+            app.exit(*args)
+
+    loop = app.loop
+    if app.is_running and loop is not None:
+        loop.call_soon_threadsafe(exit)
 
 
 def get_running_app(debugger):
@@ -50,9 +61,13 @@ def get_running_app(debugger):
         return reversed(stack)
 
     def get_stack_trace():
-        debugger.curframe = None
-        frame = _current_frames()[debugger.thread.ident]
-        return ANSI(''.join(debugger.format_stack_entry((f, f.f_lineno)) for f in get_stack(frame)))
+        # Locking so we don't unset curframe after an interaction has set it
+        with debugger.clients_lock:
+            if debugger.interacting:
+                return ''
+            debugger.curframe = None
+            frame = _current_frames()[debugger.thread.ident]
+            return ANSI(''.join(debugger.format_stack_entry((f, f.f_lineno)) for f in get_stack(frame)))
 
     pt_app = Application(
         layout=Layout(HSplit([
@@ -105,12 +120,18 @@ class RemoteIPythonDebugger(TerminalPdb):
         self.running_app = get_running_app(self)
         self.check_debugging_global = False
         self.clients_lock = RLock()
+        self.clients_changed = Condition(self.clients_lock)
+        self.interacting = False
+        self.post_mortem_message = None
 
     def _get_prompt(self):
         return PygmentsTokens([(Token.Prompt, f'{self.thread.name}> ')])
 
     def attach(self):
         def set():
+            if self.interacting:
+                # Resetting the debugger during cmdloop would unset self.curframe under its feet
+                return
             f = currentframe().f_back.f_back.f_back
             f.f_globals[self._DEBUGGING_GLOBAL] = True
             self.check_debugging_global = True
@@ -132,7 +153,9 @@ class RemoteIPythonDebugger(TerminalPdb):
         with self.clients_lock:
             self.clients.add(client)
             self._configure_tty()
-            self._run_running_app()
+            self.clients_changed.notify_all()
+            if not self.interacting:
+                self._run_running_app()
 
     def remove_client(self, client: Client):
         with self.clients_lock:
@@ -141,14 +164,23 @@ class RemoteIPythonDebugger(TerminalPdb):
                 self._configure_tty()
                 if not self.clients:
                     # TODO: can we use self.stop_here or self._set_stopinfo (from ipython code) instead of the debugging global?
-                    if self.pt_app.app.is_running:
-                        self.pt_app.app.exit('quit')
-                    if self.running_app.is_running:
-                        self.running_app.exit()
+                    exit_app(self.pt_app.app, 'quit')
+                    exit_app(self.running_app)
 
-    def preloop(self):
-        if not self.clients:
-            print_to_ctty("Waiting for client to connect")
+    def interaction(self, frame, traceback):
+        try:
+            with self.clients_lock:
+                self.interacting = True
+                if not self.clients:
+                    print_to_ctty(f'Madbg - {self.thread.name} is waiting for a client to connect')
+                    self.clients_changed.wait_for(lambda: self.clients)
+            if self.post_mortem_message is not None:
+                print(self.post_mortem_message, file=self.stdout)
+                self.post_mortem_message = None
+            exit_app(self.running_app)
+            super().interaction(frame, traceback)
+        finally:
+            self.interacting = False
 
     def trace_dispatch(self, frame, event, arg):
         """
@@ -180,8 +212,13 @@ class RemoteIPythonDebugger(TerminalPdb):
         if in_new_thread:
             self.thread_executor.submit(self._run_running_app, in_new_thread=False)
         else:
+            def exit_if_interacting():
+                # The thread might have started interacting since this was submitted
+                if self.interacting:
+                    self.running_app.exit()
+
             with create_app_session():
-                self.running_app.run()
+                self.running_app.run(pre_run=exit_if_interacting)
 
     def do_continue(self, arg):
         self._run_running_app()
@@ -190,8 +227,9 @@ class RemoteIPythonDebugger(TerminalPdb):
 
     do_c = do_cont = do_continue
 
-    def post_mortem(self, traceback):
+    def post_mortem(self, traceback, message=None):
         self.reset()
+        self.post_mortem_message = message
         self.interaction(None, traceback)
 
     def run_py(self, python_file, run_as_module, argv, set_trace=False):

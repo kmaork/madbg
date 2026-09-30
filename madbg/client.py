@@ -54,7 +54,7 @@ def connect_to_server(ip, port, timeout):
         try:
             s = socket.create_connection((ip, port), timeout=timeout)
         except ConnectionRefusedError:
-            pass
+            time.sleep(0.1)
         timeout = original_timeout - (time.time() - start_time)
         if timeout <= 0:
             raise TimeoutError()

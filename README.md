@@ -54,7 +54,8 @@ Start a debugger in the next line:
 ```python
 madbg.set_trace()
 ```
-Continue running the program until a client connects, then stop it and start a debugger:
+Start listening for clients in the background, without stopping the program.
+A connecting client can choose any thread, watch its live stack trace, and press Ctrl-C to break into it:
 ```python
 madbg.start()
 ```
@@ -64,6 +65,7 @@ madbg.post_mortem()
 ```
 
 ### Connecting to a debugger
+After connecting, choose the thread to debug. Quitting the debugger (`q`) brings you back to the thread menu.
 #### Using the CLI
 ```
 madbg connect
@@ -78,7 +80,7 @@ madbg.connect_to_debugger()
 All madbg API functions and CLI entry points allow using a custom IP and port (the default is `127.0.0.1:3513`), for example:
 
 ```python
-madbg.set_trace(ip='0.0.0.0', port=1337)
+madbg.set_trace(addr=('0.0.0.0', 1337))
 ```
 or
 ```
