@@ -1,3 +1,5 @@
+import time
+
 from .utils import CTRL_C
 
 MAIN_THREAD, WORKER_THREAD = 0, 1
@@ -47,8 +49,13 @@ def test_client_death_resumes_thread(port, debuggee, client):
     c.choose_thread(MAIN_THREAD)
     c.expect('MainThread - running')
     c.process.send(CTRL_C)
-    c.run('p conti')
+    # Die while a command runs, when there's no prompt to exit
+    c.run('import time; time.sleep(1)')
+    # The prompt disables bracketed paste once it accepts the command
+    c.expect(r'\x1b\[\?2004l')
     c.kill()
+    # Reconnect only after the command is done, so the thread resumes rather than waiting for us in the prompt
+    time.sleep(2)
     c = client('connect', '127.0.0.1', port)
     c.choose_thread(MAIN_THREAD)
     c.expect('MainThread - running')

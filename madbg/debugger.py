@@ -173,6 +173,16 @@ class RemoteIPythonDebugger(TerminalPdb):
                     exit_app(self.pt_app.app, 'quit')
                     exit_app(self.running_app)
 
+    def _prompt(self):
+        def exit_if_no_clients():
+            # The last client might have left before this prompt started, while it couldn't be exited
+            with self.clients_lock:
+                if not self.clients:
+                    self.pt_app.app.exit(result='quit')
+
+        with create_app_session():
+            return self.pt_app.prompt(pre_run=exit_if_no_clients)
+
     def interaction(self, frame, traceback):
         try:
             with self.clients_lock:
