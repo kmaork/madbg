@@ -9,6 +9,10 @@ def test_start_attach_to_main_thread(port, debuggee, client):
     c.choose_thread(MAIN_THREAD)
     c.expect('MainThread - running')
     c.process.send(CTRL_C)
+    c.run('c')
+    # Continuing gets us back to the running thread view
+    c.expect('MainThread - running')
+    c.process.send(CTRL_C)
     c.run('conti = False')
     c.run('c')
     assert c.wait() == 0

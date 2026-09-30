@@ -25,7 +25,10 @@ def _inject_set_trace(pid: int, addr: Addr = DEFAULT_ADDR):
     assert isinstance(ip, str)
     assert re.fullmatch('[.0-9]+', ip)
     assert isinstance(port, int)
-    inject_py(pid, f'__import__("madbg").start(({ip!r},{port}))')
+    # Do as little as possible while the target is hijacked - anything that raises a signal in the target (e.g. a
+    # subprocess exiting while madbg is imported) fails the injection
+    inject_py(pid, f'__import__("threading").Thread(target=lambda: __import__("madbg").start(({ip!r},{port})), '
+                   f'name="madbg-start", daemon=True).start()')
 
 
 # TODO: DEFAULT_PORT

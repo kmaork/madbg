@@ -12,7 +12,7 @@ from sys import _current_frames
 
 from prompt_toolkit.application import create_app_session
 from threading import Thread, RLock, Condition
-from typing import ContextManager, Callable, Any
+from typing import ContextManager, Callable, Any, Optional
 from .threads import run_in_thread
 from prompt_toolkit import Application, ANSI
 from prompt_toolkit.formatted_text import PygmentsTokens
@@ -122,6 +122,9 @@ class RemoteIPythonDebugger(TerminalPdb):
         self.clients_lock = RLock()
         self.clients_changed = Condition(self.clients_lock)
         self.interacting = False
+        self.continuing = False
+        # The clients to detach when quitting, None means all
+        self.clients_to_detach: Optional[set[Client]] = None
         self.post_mortem_message = None
 
     def _get_prompt(self):
@@ -164,6 +167,9 @@ class RemoteIPythonDebugger(TerminalPdb):
                 self._configure_tty()
                 if not self.clients:
                     # TODO: can we use self.stop_here or self._set_stopinfo (from ipython code) instead of the debugging global?
+                    if self.interacting:
+                        # Quit without detaching clients that connect until the debugger actually quits
+                        self.clients_to_detach = set()
                     exit_app(self.pt_app.app, 'quit')
                     exit_app(self.running_app)
 
@@ -178,9 +184,13 @@ class RemoteIPythonDebugger(TerminalPdb):
                 print(self.post_mortem_message, file=self.stdout)
                 self.post_mortem_message = None
             exit_app(self.running_app)
+            self.continuing = False
             super().interaction(frame, traceback)
         finally:
-            self.interacting = False
+            with self.clients_lock:
+                self.interacting = False
+                if self.continuing and self.clients:
+                    self._run_running_app()
 
     def trace_dispatch(self, frame, event, arg):
         """
@@ -202,26 +212,40 @@ class RemoteIPythonDebugger(TerminalPdb):
             if self.quitting or bdb_quit:
                 self.quit()
 
+    def do_quit(self, arg):
+        # Only detach the clients that saw the quit, not ones that connect until the debugger actually quits
+        with self.clients_lock:
+            if self.clients_to_detach is None:
+                self.clients_to_detach = set(self.clients)
+        return super().do_quit(arg)
+
+    do_q = do_exit = do_quit
+
     def quit(self):
         with self.clients_lock:
-            for client in self.clients:
+            to_detach = self.clients if self.clients_to_detach is None else self.clients_to_detach & self.clients
+            for client in to_detach:
                 client.on_detach()
-            self.clients.clear()
+            self.clients -= to_detach
+            self.clients_to_detach = None
+            if self.clients:
+                self._run_running_app()
 
     def _run_running_app(self, in_new_thread=True):
         if in_new_thread:
             self.thread_executor.submit(self._run_running_app, in_new_thread=False)
         else:
-            def exit_if_interacting():
-                # The thread might have started interacting since this was submitted
-                if self.interacting:
-                    self.running_app.exit()
+            def exit_if_not_needed():
+                # The thread might have started interacting, or the clients left, since this was submitted
+                with self.clients_lock:
+                    if self.interacting or not self.clients:
+                        self.running_app.exit()
 
             with create_app_session():
-                self.running_app.run(pre_run=exit_if_interacting)
+                self.running_app.run(pre_run=exit_if_not_needed)
 
     def do_continue(self, arg):
-        self._run_running_app()
+        self.continuing = True
         # This doesn't register a SIGINT handler as we set self.nosigint to True
         return super().do_continue(arg)
 
