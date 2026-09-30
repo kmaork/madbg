@@ -13,7 +13,7 @@ from sys import _current_frames
 from prompt_toolkit.application import create_app_session
 from threading import Thread, RLock, Condition
 from typing import ContextManager, Callable, Any, Optional
-from .threads import run_in_thread
+from hypno import run_in_thread
 from prompt_toolkit import Application, ANSI
 from prompt_toolkit.formatted_text import PygmentsTokens
 from prompt_toolkit.input.vt100 import Vt100Input

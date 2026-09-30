@@ -88,7 +88,7 @@ madbg connect 8.8.8.8 1337
 ```
 ## Platforms
 
-Madbg supports linux with python>=3.8.
+Madbg supports linux with python>=3.11.
 
 ## Possible effects
 What madbg avoids doing (that other solutions mostly don't):

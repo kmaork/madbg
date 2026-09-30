@@ -5,7 +5,6 @@ from inspect import currentframe
 from threading import current_thread
 from pdb import Restart
 from hypno import inject_py
-from pyinjector import InjectorError
 
 from .server import DebuggerServer
 from .client import connect_to_debugger
@@ -26,15 +25,7 @@ def _inject_set_trace(pid: int, addr: Addr = DEFAULT_ADDR):
     assert isinstance(ip, str)
     assert re.fullmatch('[.0-9]+', ip)
     assert isinstance(port, int)
-    # Do as little as possible while the target is hijacked - anything that raises a signal in the target (e.g. a
-    # subprocess exiting while madbg is imported) fails the injection
-    try:
-        inject_py(pid, f'__import__("threading").Thread(target=lambda: __import__("madbg").start(({ip!r},{port})), '
-                       f'name="madbg-start", daemon=True).start()')
-    except InjectorError as e:
-        # The code was injected, but pyinjector can't unload the injected library under musl
-        if 'injector_uninject' not in str(e):
-            raise
+    inject_py(pid, f'__import__("madbg").start(({ip!r},{port}))')
 
 
 # TODO: DEFAULT_PORT

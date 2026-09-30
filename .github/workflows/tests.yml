@@ -18,9 +18,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.8", "3.9", "3.10", "3.11"]
+        python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
@@ -31,7 +33,7 @@ jobs:
         run: python -m tox
       - name: Upload dists
         # Artifacts are immutable since v4, so only one matrix job may upload "dist"
-        if: matrix.python-version == '3.11'
+        if: matrix.python-version == '3.13'
         uses: actions/upload-artifact@v4
         with:
           name: dist
@@ -44,14 +46,13 @@ jobs:
       fail-fast: false
       matrix:
         container:
-          - "python:3.8-alpine"
-          - "python:3.9-alpine"
-          - "python:3.10-alpine"
           - "python:3.11-alpine"
+          - "python:3.12-alpine"
+          - "python:3.13-alpine"
     steps:
       - name: Install packages
-        # git needed for checkout
-        run: apk add git
+        # git needed for checkout, gcc and musl-dev for building hypno from its submodule
+        run: apk add git gcc musl-dev
       - uses: actions/checkout@v4
         with:
           submodules: true
