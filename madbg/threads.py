@@ -38,7 +38,10 @@ THREAD_COMMANDS: Dict[Tuple[int, int], ThreadCommand] = {}
 
 
 def _set_ptracer(pid: int):
-    """ Allow the given process to ptrace us when yama's ptrace_scope is 1. Fails silently if yama is disabled. """
+    """
+    Allow the given process to ptrace us when yama's ptrace_scope is 1. Fails silently if yama is disabled.
+    Note that this overrides any previous PR_SET_PTRACER of the process.
+    """
     ctypes.CDLL(None, use_errno=True).prctl(PR_SET_PTRACER, ctypes.c_ulong(pid), 0, 0, 0)
 
 
