@@ -78,3 +78,66 @@ def test_debuggee_exits_while_client_watches(port, debuggee, client):
     assert exit_code == 0
     assert 'Task was destroyed' not in output
     assert c.wait() == 0
+
+
+def test_second_client_joins_running_view_and_prompt(port, debuggee, client):
+    script = debuggee('start.py', port)
+    c1 = client('connect', '127.0.0.1', port)
+    c1.choose_thread(MAIN_THREAD)
+    c1.expect('MainThread - running')
+    c2 = client('connect', '127.0.0.1', port)
+    c2.choose_thread(MAIN_THREAD)
+    c2.expect('MainThread - running')
+    c1.process.send(CTRL_C)
+    c1.expect(r'\x1b\[\?2004h[^\n]*MainThread>')
+    c3 = client('connect', '127.0.0.1', port)
+    c3.choose_thread(MAIN_THREAD)
+    # A client joining a thread that is already stopped gets the prompt too
+    c3.run('conti = False')
+    c3.run('c')
+    assert script.wait()[0] == 0
+
+
+def test_leave_mid_prompt_and_reconnect_immediately(port, debuggee, client):
+    script = debuggee('start.py', port)
+    for _ in range(4):
+        c = client('connect', '127.0.0.1', port)
+        c.choose_thread(MAIN_THREAD)
+        c.expect('MainThread - running')
+        c.process.send(CTRL_C)
+        c.expect(r'\x1b\[\?2004h[^\n]*MainThread>')
+        c.kill()
+    c = client('connect', '127.0.0.1', port)
+    c.choose_thread(MAIN_THREAD)
+    c.expect('MainThread - running')
+    c.process.send(CTRL_C)
+    c.run('conti = False')
+    c.run('c')
+    assert script.wait()[0] == 0
+
+
+def test_ctrl_d_quits_to_thread_menu(port, debuggee, client):
+    script = debuggee('start.py', port)
+    c = client('connect', '127.0.0.1', port)
+    c.choose_thread(MAIN_THREAD)
+    c.expect('MainThread - running')
+    c.process.send(CTRL_C)
+    c.expect(r'\x1b\[\?2004h[^\n]*MainThread>')
+    c.process.send('\x04')
+    c.exit_thread_menu()
+    assert c.wait() == 0
+    script.kill()
+
+
+def test_client_dies_in_thread_menu(port, debuggee, client):
+    script = debuggee('start.py', port)
+    c = client('connect', '127.0.0.1', port)
+    c.expect('Choose a thread')
+    c.kill()
+    c = client('connect', '127.0.0.1', port)
+    c.choose_thread(MAIN_THREAD)
+    c.expect('MainThread - running')
+    c.process.send(CTRL_C)
+    c.run('conti = False')
+    c.run('c')
+    assert script.wait()[0] == 0

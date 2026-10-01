@@ -1,18 +1,19 @@
 from __future__ import annotations
 
+from copy import copy
 from dataclasses import dataclass
 
 import runpy
 import os
 import sys
-from bdb import BdbQuit
+from bdb import BdbQuit, Bdb
 from contextlib import contextmanager, nullcontext
 from inspect import currentframe
 from sys import _current_frames
 
 from prompt_toolkit.application import create_app_session
 from threading import Thread, RLock, Condition
-from typing import ContextManager, Callable, Any, Optional
+from typing import ContextManager, Callable, Any
 from hypno import run_in_thread
 from prompt_toolkit import Application, ANSI
 from prompt_toolkit.formatted_text import PygmentsTokens
@@ -40,6 +41,21 @@ def exit_app(app: Application, *args):
         loop.call_soon_threadsafe(exit)
 
 
+def redraw_app(app: Application):
+    """ Thread-safely repaint the whole app, e.g. for a client that just connected to the PTY """
+    def redraw():
+        app.renderer.reset()
+        app.invalidate()
+
+    loop = app.loop
+    if app.is_running and loop is not None:
+        loop.call_soon_threadsafe(redraw)
+
+
+class NoClients(Exception):
+    """ Exits the debugger prompt when the last client leaves """
+
+
 def get_running_app(debugger):
     kb = KeyBindings()
 
@@ -51,7 +67,7 @@ def get_running_app(debugger):
     @kb.add('q')
     def handle_q(_event):
         pt_app.exit()
-        debugger.quit()
+        debugger.detach_clients()
 
     def get_stack(frame):
         stack = []
@@ -61,13 +77,11 @@ def get_running_app(debugger):
         return reversed(stack)
 
     def get_stack_trace():
-        # Locking so we don't unset curframe after an interaction has set it
-        with debugger.clients_lock:
-            if debugger.interacting:
-                return ''
-            debugger.curframe = None
-            frame = _current_frames()[debugger.thread.ident]
-            return ANSI(''.join(debugger.format_stack_entry((f, f.f_lineno)) for f in get_stack(frame)))
+        # Format with a copy, so the debugger's curframe isn't marked, nor mutated under an interaction's feet
+        formatter = copy(debugger)
+        formatter.curframe = None
+        frame = _current_frames().get(debugger.thread.ident)
+        return ANSI(''.join(formatter.format_stack_entry((f, f.f_lineno)) for f in get_stack(frame)))
 
     pt_app = Application(
         layout=Layout(HSplit([
@@ -81,6 +95,7 @@ def get_running_app(debugger):
         erase_when_done=True,
         refresh_interval=0.5,
     )
+    pt_app.should_run = lambda: debugger.clients and debugger.resumed
     return pt_app
 
 
@@ -119,35 +134,44 @@ class RemoteIPythonDebugger(TerminalPdb):
         # todo: run main debugger prompt in our loop
         self.running_app = get_running_app(self)
         self.check_debugging_global = False
-        self.pt_app.prompt = self._wrap_prompt(self.pt_app.prompt)
+        self.pt_app.app.should_run = lambda: self.clients
+        # Guards the clients and the views. Views are level-triggered: each state change calls _update_views,
+        # and each view re-checks its should_run in pre_run, as exiting an app that didn't start yet is a no-op.
         self.clients_lock = RLock()
         self.clients_changed = Condition(self.clients_lock)
-        self.interacting = False
-        self.continuing = False
-        # The clients to detach when quitting, None means all
-        self.clients_to_detach: Optional[set[Client]] = None
+        # Whether the thread runs freely, i.e. isn't in an interaction or about to enter one. Owned by the thread.
+        self.resumed = True
+        self.running_app_future = None
         self.post_mortem_message = None
 
-    def _wrap_prompt(self, prompt):
-        """ Wrapping the prompt itself, as the method IPython calls it from differs between versions """
-        def exit_if_no_clients():
-            # The last client might have left before this prompt started, while it couldn't be exited
-            with self.clients_lock:
-                if not self.clients:
-                    self.pt_app.app.exit(result='quit')
-
-        def wrapper(*args, **kwargs):
-            with create_app_session():
-                return prompt(*args, pre_run=exit_if_no_clients, **kwargs)
-
-        return wrapper
+    def _prompt(self):
+        """ Overriding super to exit the prompt if it isn't needed by the time it starts """
+        with create_app_session():
+            return self.pt_app.prompt(pre_run=lambda: self._exit_if_unneeded(self.pt_app.app))
 
     def _get_prompt(self):
         return PygmentsTokens([(Token.Prompt, f'{self.thread.name}> ')])
 
+    def _exit_if_unneeded(self, app):
+        with self.clients_lock:
+            if not app.should_run() and app.future is not None and not app.future.done():
+                app.exit(exception=NoClients) if app is self.pt_app.app else app.exit()
+
+    def _update_views(self):
+        """ Called with clients_lock held whenever clients or resumed change """
+        for app in (self.pt_app.app, self.running_app):
+            if app.is_running and app.loop is not None:
+                app.loop.call_soon_threadsafe(self._exit_if_unneeded, app)
+        if self.running_app.should_run() and (self.running_app_future is None or self.running_app_future.done()):
+            self.running_app_future = self.thread_executor.submit(self._run_running_app)
+
+    def _run_running_app(self):
+        with create_app_session():
+            self.running_app.run(pre_run=lambda: self._exit_if_unneeded(self.running_app))
+
     def attach(self):
         def set():
-            if self.interacting:
+            if not self.resumed:
                 # Resetting the debugger during cmdloop would unset self.curframe under its feet
                 return
             f = currentframe().f_back.f_back.f_back
@@ -172,40 +196,40 @@ class RemoteIPythonDebugger(TerminalPdb):
             self.clients.add(client)
             self._configure_tty()
             self.clients_changed.notify_all()
-            if not self.interacting:
-                self._run_running_app()
+            for app in (self.pt_app.app, self.running_app):
+                redraw_app(app)
+            self._update_views()
 
     def remove_client(self, client: Client):
         with self.clients_lock:
             if client in self.clients:
                 self.clients.remove(client)
                 self._configure_tty()
-                if not self.clients:
-                    # TODO: can we use self.stop_here or self._set_stopinfo (from ipython code) instead of the debugging global?
-                    if self.interacting:
-                        # Quit without detaching clients that connect until the debugger actually quits
-                        self.clients_to_detach = set()
-                    exit_app(self.pt_app.app, 'quit')
-                    exit_app(self.running_app)
+                self._update_views()
+
+    def _set_resumed(self, resumed):
+        with self.clients_lock:
+            self.resumed = resumed
+            self._update_views()
 
     def interaction(self, frame, traceback):
+        self._set_resumed(False)
         try:
             with self.clients_lock:
-                self.interacting = True
                 if not self.clients:
                     print_to_ctty(f'Madbg - {self.thread.name} is waiting for a client to connect')
                     self.clients_changed.wait_for(lambda: self.clients)
             if self.post_mortem_message is not None:
                 print(self.post_mortem_message, file=self.stdout)
                 self.post_mortem_message = None
-            exit_app(self.running_app)
-            self.continuing = False
             super().interaction(frame, traceback)
+        except NoClients:
+            # Resume the thread, like quit but without detaching clients that connected meanwhile
+            self.forget()
+            Bdb.set_quit(self)
         finally:
-            with self.clients_lock:
-                self.interacting = False
-                if self.continuing and self.clients:
-                    self._run_running_app()
+            # Show the running view unless the thread is about to stop again, e.g. after a step
+            self._set_resumed(self.quitting or self.stoplineno == -1)
 
     def trace_dispatch(self, frame, event, arg):
         """
@@ -217,54 +241,22 @@ class RemoteIPythonDebugger(TerminalPdb):
                 del frame.f_globals[self._DEBUGGING_GLOBAL]
             else:
                 return self.trace_dispatch
-        bdb_quit = False
         try:
-            s = super().trace_dispatch(frame, event, arg)
-            return s
+            return super().trace_dispatch(frame, event, arg)
         except BdbQuit:
-            bdb_quit = True
-        finally:
-            if self.quitting or bdb_quit:
-                self.quit()
+            pass
 
-    def do_quit(self, arg):
-        # Only detach the clients that saw the quit, not ones that connect until the debugger actually quits
+    def set_quit(self):
+        """ Called by the quit commands, including EOF. Returns the clients that saw the quit to the thread menu. """
+        self.detach_clients()
+        super().set_quit()
+
+    def detach_clients(self):
         with self.clients_lock:
-            if self.clients_to_detach is None:
-                self.clients_to_detach = set(self.clients)
-        return super().do_quit(arg)
-
-    do_q = do_exit = do_quit
-
-    def quit(self):
-        with self.clients_lock:
-            to_detach = self.clients if self.clients_to_detach is None else self.clients_to_detach & self.clients
-            for client in to_detach:
+            for client in self.clients:
                 client.on_detach()
-            self.clients -= to_detach
-            self.clients_to_detach = None
-            if self.clients:
-                self._run_running_app()
-
-    def _run_running_app(self, in_new_thread=True):
-        if in_new_thread:
-            self.thread_executor.submit(self._run_running_app, in_new_thread=False)
-        else:
-            def exit_if_not_needed():
-                # The thread might have started interacting, or the clients left, since this was submitted
-                with self.clients_lock:
-                    if self.interacting or not self.clients:
-                        self.running_app.exit()
-
-            with create_app_session():
-                self.running_app.run(pre_run=exit_if_not_needed)
-
-    def do_continue(self, arg):
-        self.continuing = True
-        # This doesn't register a SIGINT handler as we set self.nosigint to True
-        return super().do_continue(arg)
-
-    do_c = do_cont = do_continue
+            self.clients.clear()
+            self._update_views()
 
     def post_mortem(self, traceback, message=None):
         self.reset()

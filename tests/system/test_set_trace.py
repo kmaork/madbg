@@ -42,3 +42,14 @@ def test_set_trace_with_failing_debugger(port, debuggee):
     exit_code, output = debuggee('set_trace.py', port, 1, 'fail').wait()
     assert exit_code != 0
     assert ZeroDivisionError.__name__ in output
+
+
+def test_set_trace_and_continue_repeatedly(port, debuggee, client):
+    times = 15
+    script = debuggee('set_trace.py', port, times, '')
+    c = client('connect', '127.0.0.1', port)
+    c.choose_thread()
+    for _ in range(times):
+        c.run('value += 1')
+        c.run('c')
+    assert f'RESULT {times}' in script.wait()[1]

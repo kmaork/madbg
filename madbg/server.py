@@ -1,6 +1,6 @@
 from __future__ import annotations
 from functools import partial
-from prompt_toolkit.application import create_app_session
+from prompt_toolkit.application import Application, create_app_session
 from concurrent.futures import ThreadPoolExecutor, Future
 
 from traceback import format_exc
@@ -10,7 +10,7 @@ import threading
 import pickle
 import struct
 from asyncio import Protocol, StreamReader, StreamWriter, AbstractEventLoop, start_server, new_event_loop, \
-    Event, Task, CancelledError, run_coroutine_threadsafe, current_task, wait, FIRST_COMPLETED
+    Event, Task, Lock, CancelledError, run_coroutine_threadsafe, current_task, wait, FIRST_COMPLETED
 from dataclasses import dataclass
 from threading import Thread
 from typing import Set, Optional
@@ -33,20 +33,14 @@ class ClientMulticastProtocol(Protocol):
     def remove_client(self, client: StreamWriter):
         self.clients.remove(client)
 
-    async def _drain(self, client):
-        try:
-            await client.drain()
-        except ConnectionError:
-            self.clients.discard(client)
-
     def data_received(self, data: bytes) -> None:
         to_remove = set()
         for client in self.clients:
             if client.is_closing():
                 to_remove.add(client)
             else:
+                # No drain: the transport buffers, and a fire-and-forget drain task can only fail unobserved
                 client.write(data)
-                self.loop.create_task(self._drain(client))
         self.clients -= to_remove
 
 
@@ -137,13 +131,16 @@ class DebuggerServer(Thread):
         self.future: Future = Future()
         self.serve_task: Optional[Task] = None
         self.client_tasks: Set[Task] = set()
+        self.sessions_lock = Lock()
         self.exit_stack.push(self.executor)
 
     async def get_session(self, thread: Thread) -> Session:
-        session = self.sessions.get(thread)
-        if session is None:
-            session_cm = Session.create(self.loop, thread)
-            session = self.sessions[thread] = await self.exit_stack.enter_async_context(session_cm)
+        # Locking so two callers don't create two sessions for the same thread
+        async with self.sessions_lock:
+            session = self.sessions.get(thread)
+            if session is None:
+                session_cm = Session.create(self.loop, thread)
+                session = self.sessions[thread] = await self.exit_stack.enter_async_context(session_cm)
         return session
 
     def get_debugger(self, thread: Thread) -> RemoteIPythonDebugger:
@@ -152,24 +149,16 @@ class DebuggerServer(Thread):
 
     def _get_madbg_threads(self):
         threads = {self}
-        try:
-            with self.executor._shutdown_lock:
-                threads.update(self.executor._threads)
-        except AttributeError:
-            raise
-        try:
-            for session in self.sessions.values():
-                with session.debugger.thread_executor._shutdown_lock:
-                    threads.update(session.debugger.thread_executor._threads)
-        except AttributeError:
-            raise
-        try:
-            threads.update(s.debugger.shell.history_manager.save_thread for s in self.sessions.values())
-        except AttributeError:
-            raise
+        with self.executor._shutdown_lock:
+            threads.update(self.executor._threads)
+        for session in self.sessions.values():
+            with session.debugger.thread_executor._shutdown_lock:
+                threads.update(session.debugger.thread_executor._threads)
+        threads.update(s.debugger.shell.history_manager.save_thread for s in self.sessions.values())
         return threads
 
-    def _run_app(self, async_pty: AsyncPTY, config: TTYConfig) -> Optional[Thread]:
+    @staticmethod
+    def _run_app(app: Application, stop: threading.Event) -> Optional[Thread]:
         """
         Without create_app_session we get mixups between different running apps, and only one could run at a time.
         According to prompt_toolkit docs at https://github.com/prompt-toolkit/python-prompt-toolkit/blob/
@@ -180,15 +169,29 @@ class DebuggerServer(Thread):
         applications running at the same time, you have to create a separate
         `AppSession` using a `with create_app_session():` block.
         """
-        with create_app_session():
-            threads_blacklist = self._get_madbg_threads()
-            app = create_app(async_pty.pty.slave_io,
-                             async_pty.pty.slave_io,
-                             config.term_type,
-                             threads_blacklist)
+        def exit_if_stopped():
+            # Exiting an app that didn't start yet is a no-op
+            if stop.is_set():
+                app.exit()
 
-            self.exit_stack.callback(exit_app, app)
-            return app.run()
+        with create_app_session():
+            return app.run(pre_run=exit_if_stopped)
+
+    async def _choose_thread(self, async_pty: AsyncPTY, reader: StreamReader, config: TTYConfig) -> Optional[Thread]:
+        """ Show the thread menu until the client chooses a thread, exits, or disconnects """
+        app = create_app(async_pty.pty.slave_io, async_pty.pty.slave_io, config.term_type, self._get_madbg_threads())
+        stop = threading.Event()
+        try:
+            async with async_pty.write_into(reader) as write_task:
+                # Running in executor because of https://github.com/prompt-toolkit/python-prompt-toolkit/issues/1705
+                app_future = self.loop.run_in_executor(self.executor, self._run_app, app, stop)
+                # The write task finishes when the client disconnects
+                await wait([app_future, write_task], return_when=FIRST_COMPLETED)
+                if app_future.done():
+                    return app_future.result()
+        finally:
+            stop.set()
+            exit_app(app)
 
     async def _handle_client(self, reader: StreamReader, writer: StreamWriter):
         try:
@@ -200,11 +203,7 @@ class DebuggerServer(Thread):
             async with AsyncPTY.open(self.loop) as async_pty, async_pty.read_into(writer):
                 config.apply(async_pty.pty.slave_fd)
                 while True:
-                    async with async_pty.write_into(reader):
-                        # Running in executor because of https://github.com/prompt-toolkit/python-prompt-toolkit/issues/1705
-                        app = self.loop.run_in_executor(self.executor, self._run_app, async_pty, config)
-                        self.exit_stack.push_async_callback(lambda: app)
-                        choice = await app
+                    choice = await self._choose_thread(async_pty, reader, config)
                     if choice is None:
                         break
                     session = await self.get_session(choice)
