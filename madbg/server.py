@@ -1,21 +1,22 @@
 from __future__ import annotations
 from functools import partial
-from prompt_toolkit.application import create_app_session
+from prompt_toolkit.application import Application, create_app_session
 from concurrent.futures import ThreadPoolExecutor, Future
 
 from traceback import format_exc
 from contextlib import asynccontextmanager, AsyncExitStack
 import atexit
+import threading
 import pickle
 import struct
 from asyncio import Protocol, StreamReader, StreamWriter, AbstractEventLoop, start_server, new_event_loop, \
-    Event, Task, CancelledError
+    Event, Task, Lock, CancelledError, run_coroutine_threadsafe, current_task, wait, FIRST_COMPLETED
 from dataclasses import dataclass
 from threading import Thread
 from typing import Set, Optional
 
 from .consts import Addr
-from .debugger import RemoteIPythonDebugger, Client
+from .debugger import RemoteIPythonDebugger, Client, exit_app
 from .tty_utils import print_to_ctty, PTY, TTYConfig
 from .communication import MESSAGE_LENGTH_FMT, MESSAGE_LENGTH_LENGTH, read_into_until_stopped
 from .app import create_app
@@ -32,20 +33,14 @@ class ClientMulticastProtocol(Protocol):
     def remove_client(self, client: StreamWriter):
         self.clients.remove(client)
 
-    async def _drain(self, client):
-        try:
-            await client.drain()
-        except ConnectionResetError:
-            self.clients.remove(client)
-
     def data_received(self, data: bytes) -> None:
         to_remove = set()
         for client in self.clients:
             if client.is_closing():
                 to_remove.add(client)
             else:
+                # No drain: the transport buffers, and a fire-and-forget drain task can only fail unobserved
                 client.write(data)
-                self.loop.create_task(client.drain())
         self.clients -= to_remove
 
 
@@ -85,15 +80,15 @@ class AsyncPTY:
         stop = Event()
         task = self.loop.create_task(read_into_until_stopped(reader, self.master_writer_stream, stop))
         try:
-            yield
+            yield task
         finally:
             stop.set()
             await task
 
     @asynccontextmanager
     async def connect(self, reader: StreamReader, writer: StreamWriter):
-        async with self.read_into(writer), self.write_into(reader):
-            yield
+        async with self.read_into(writer), self.write_into(reader) as write_task:
+            yield write_task
 
 
 @dataclass
@@ -110,13 +105,17 @@ class Session:
             yield cls(loop, debugger, async_pty)
 
     async def connect_client(self, reader: StreamReader, writer: StreamWriter, tty_config: TTYConfig):
-        async with self.async_pty.connect(reader, writer):
+        async with self.async_pty.connect(reader, writer) as write_task:
             done = Event()
             client = Client(tty_config, partial(self.loop.call_soon_threadsafe, done.set))
-            # TODO: make thread safe
             self.debugger.add_client(client)
-            await done.wait()
-            self.debugger.remove_client(client)
+            done_task = self.loop.create_task(done.wait())
+            try:
+                # The write task finishes when the client disconnects
+                await wait([done_task, write_task], return_when=FIRST_COMPLETED)
+            finally:
+                done_task.cancel()
+                self.debugger.remove_client(client)
 
 
 class DebuggerServer(Thread):
@@ -131,38 +130,35 @@ class DebuggerServer(Thread):
         self.executor: ThreadPoolExecutor = ThreadPoolExecutor(64)
         self.future: Future = Future()
         self.serve_task: Optional[Task] = None
-
-    def __post_init__(self):
+        self.client_tasks: Set[Task] = set()
+        self.sessions_lock = Lock()
         self.exit_stack.push(self.executor)
-        self.loop.set_debug(True)
 
     async def get_session(self, thread: Thread) -> Session:
-        session = self.sessions.get(thread)
-        if session is None:
-            session_cm = Session.create(self.loop, thread)
-            session = self.sessions[thread] = await self.exit_stack.enter_async_context(session_cm)
+        # Locking so two callers don't create two sessions for the same thread
+        async with self.sessions_lock:
+            session = self.sessions.get(thread)
+            if session is None:
+                session_cm = Session.create(self.loop, thread)
+                session = self.sessions[thread] = await self.exit_stack.enter_async_context(session_cm)
         return session
+
+    def get_debugger(self, thread: Thread) -> RemoteIPythonDebugger:
+        """ Thread-safe way to get the debugger of the given thread, to be called from outside the server's thread """
+        return run_coroutine_threadsafe(self.get_session(thread), self.loop).result().debugger
 
     def _get_madbg_threads(self):
         threads = {self}
-        try:
-            with self.executor._shutdown_lock:
-                threads.update(self.executor._threads)
-        except AttributeError:
-            raise
-        try:
-            for session in self.sessions.values():
-                with session.debugger.thread_executor._shutdown_lock:
-                    threads.update(session.debugger.thread_executor._threads)
-        except AttributeError:
-            raise
-        try:
-            threads.update(s.debugger.shell.history_manager.save_thread for s in self.sessions.values())
-        except AttributeError:
-            raise
+        with self.executor._shutdown_lock:
+            threads.update(self.executor._threads)
+        for session in self.sessions.values():
+            with session.debugger.thread_executor._shutdown_lock:
+                threads.update(session.debugger.thread_executor._threads)
+        threads.update(s.debugger.shell.history_manager.save_thread for s in self.sessions.values())
         return threads
 
-    def _run_app(self, async_pty: AsyncPTY, config: TTYConfig) -> Optional[Thread]:
+    @staticmethod
+    def _run_app(app: Application, stop: threading.Event) -> Optional[Thread]:
         """
         Without create_app_session we get mixups between different running apps, and only one could run at a time.
         According to prompt_toolkit docs at https://github.com/prompt-toolkit/python-prompt-toolkit/blob/
@@ -173,19 +169,29 @@ class DebuggerServer(Thread):
         applications running at the same time, you have to create a separate
         `AppSession` using a `with create_app_session():` block.
         """
+        def exit_if_stopped():
+            # Exiting an app that didn't start yet is a no-op
+            if stop.is_set():
+                app.exit()
+
         with create_app_session():
-            threads_blacklist = self._get_madbg_threads()
-            app = create_app(async_pty.pty.slave_io,
-                             async_pty.pty.slave_io,
-                             config.term_type,
-                             threads_blacklist)
+            return app.run(pre_run=exit_if_stopped)
 
-            def on_exit():
-                if app.is_running:
-                    app.exit()
-
-            self.exit_stack.callback(on_exit)
-            return app.run()
+    async def _choose_thread(self, async_pty: AsyncPTY, reader: StreamReader, config: TTYConfig) -> Optional[Thread]:
+        """ Show the thread menu until the client chooses a thread, exits, or disconnects """
+        app = create_app(async_pty.pty.slave_io, async_pty.pty.slave_io, config.term_type, self._get_madbg_threads())
+        stop = threading.Event()
+        try:
+            async with async_pty.write_into(reader) as write_task:
+                # Running in executor because of https://github.com/prompt-toolkit/python-prompt-toolkit/issues/1705
+                app_future = self.loop.run_in_executor(self.executor, self._run_app, app, stop)
+                # The write task finishes when the client disconnects
+                await wait([app_future, write_task], return_when=FIRST_COMPLETED)
+                if app_future.done():
+                    return app_future.result()
+        finally:
+            stop.set()
+            exit_app(app)
 
     async def _handle_client(self, reader: StreamReader, writer: StreamWriter):
         try:
@@ -197,15 +203,13 @@ class DebuggerServer(Thread):
             async with AsyncPTY.open(self.loop) as async_pty, async_pty.read_into(writer):
                 config.apply(async_pty.pty.slave_fd)
                 while True:
-                    async with async_pty.write_into(reader):
-                        # Running in executor because of https://github.com/prompt-toolkit/python-prompt-toolkit/issues/1705
-                        app = self.loop.run_in_executor(self.executor, self._run_app, async_pty, config)
-                        self.exit_stack.push_async_callback(lambda: app)
-                        choice = await app
+                    choice = await self._choose_thread(async_pty, reader, config)
                     if choice is None:
                         break
                     session = await self.get_session(choice)
                     await session.connect_client(reader, writer, config)
+                    if reader.at_eof():
+                        break
         finally:
             writer.close()
         print_to_ctty(f'Client disconnected {peer}')
@@ -223,12 +227,19 @@ class DebuggerServer(Thread):
 
         but it didn't work
         """
+        task = current_task()
+        self.client_tasks.add(task)
         try:
             await self._handle_client(reader, writer)
+        except CancelledError:
+            writer.close()
+            raise
         except:
             print_to_ctty(f'Madbg - error handling client:\n{format_exc()}')
             writer.close()
             raise
+        finally:
+            self.client_tasks.discard(task)
 
     async def _serve(self):
         # TODO: support all addr types
@@ -251,19 +262,27 @@ class DebuggerServer(Thread):
         finally:
             await self.exit_stack.aclose()
 
+    def _cancel(self):
+        # Disconnect clients first, as since python 3.12 serve_forever waits for all connections to close.
+        for task in self.client_tasks:
+            task.cancel()
+        if self.serve_task is not None:
+            self.serve_task.cancel()
+
     def run(self):
         self.loop.run_until_complete(self._async_run())
         self.future.set_result(None)
 
     @classmethod
-    def make_sure_listening_at(cls, addr: Addr):
+    def make_sure_listening_at(cls, addr: Addr) -> DebuggerServer:
         """
         This code might be called from injected code, so make it as simple and short as possible.
         """
         if cls.INSTANCE is None:
             self = cls(addr)
             self.start()
-            atexit.register(DebuggerServer.stop)
+            # Stop before non-daemon threads are joined, as our apps keep some of them running
+            getattr(threading, '_register_atexit', atexit.register)(DebuggerServer.stop)
             cls.INSTANCE = self
         else:
             if cls.INSTANCE.future.done():
@@ -275,6 +294,7 @@ class DebuggerServer(Thread):
                 if addr != cls.INSTANCE.addr:
                     # TODO
                     raise RuntimeError('Binding on multiple addresses is not supported yet')
+        return cls.INSTANCE
 
     @classmethod
     def stop(cls):
@@ -287,124 +307,15 @@ class DebuggerServer(Thread):
                 # TODO
                 raise RuntimeError()
             else:
-                if cls.INSTANCE.serve_task is not None:
-                    cls.INSTANCE.loop.call_soon_threadsafe(lambda: cls.INSTANCE.serve_task.cancel())
+                cls.INSTANCE.loop.call_soon_threadsafe(cls.INSTANCE._cancel)
                 # Wait for server to finish
                 cls.INSTANCE.future.result()
 
 
 """
-self.curframe is none bug:
-This cause the clear:
-File "/mnt/c/Users/kmaor/Documents/code/madbg/scripts/demo.py", line 26, in <module>
-    a()
-  File "/mnt/c/Users/kmaor/Documents/code/madbg/scripts/demo.py", line 15, in a
-    print('Hello main thread')
-  File "/mnt/c/Users/kmaor/Documents/code/madbg/madbg/debugger.py", line 138, in trace_dispatch
-    return self.trace_dispatch
-  File "/usr/lib/python3.11/bdb.py", line 90, in trace_dispatch
-    return self.dispatch_line(frame)
-  File "/usr/lib/python3.11/bdb.py", line 114, in dispatch_line
-    self.user_line(frame)
-  File "/usr/lib/python3.11/pdb.py", line 344, in user_line
-    self.interaction(frame, None)
-  File "/mnt/c/Users/kmaor/Documents/code/clones/ipython/IPython/core/debugger.py", line 335, in interaction
-    OldPdb.interaction(self, frame, traceback)
-  File "/usr/lib/python3.11/pdb.py", line 440, in interaction
-    self._cmdloop()
-  File "/usr/lib/python3.11/pdb.py", line 404, in _cmdloop
-    self.cmdloop()
-  File "/mnt/c/Users/kmaor/Documents/code/clones/ipython/IPython/terminal/debugger.py", line 144, in cmdloop
-    line = self.thread_executor.submit(self._prompt).result()
-  File "/usr/lib/python3.11/concurrent/futures/_base.py", line 451, in result
-    self._condition.wait(timeout)
-  File "/usr/lib/python3.11/threading.py", line 320, in wait
-    waiter.acquire()
-  File "<string>", line 1, in <module>
-  File "/mnt/c/Users/kmaor/Documents/code/hypno/hypno/hypno.py", line 86, in execute
-    self.result = self.func(*self.args, **self.kwargs)
-  File "/mnt/c/Users/kmaor/Documents/code/madbg/madbg/debugger.py", line 90, in set
-    f = currentframe().f_back.f_back.f_back
-  File "/mnt/c/Users/kmaor/Documents/code/clones/ipython/IPython/core/debugger.py", line 294, in set_trace
-    return super().set_trace(frame)
-  File "/usr/lib/python3.11/bdb.py", line 330, in set_trace
-    self.reset()
-  File "/usr/lib/python3.11/pdb.py", line 276, in reset
-    self.forget()
-  File "/usr/lib/python3.11/pdb.py", line 285, in forget
-    traceback.print_stack()
-
-This is the error:
-Traceback (most recent call last):
-  File "/mnt/c/Users/kmaor/Documents/code/madbg/scripts/demo.py", line 26, in <module>
-    a()
-  File "/mnt/c/Users/kmaor/Documents/code/madbg/scripts/demo.py", line 15, in a
-    print('Hello main thread')
-    ^^^^^
-  File "/mnt/c/Users/kmaor/Documents/code/madbg/scripts/demo.py", line 15, in a
-    print('Hello main thread')
-    ^^^^^
-  File "/mnt/c/Users/kmaor/Documents/code/madbg/madbg/debugger.py", line 138, in trace_dispatch
-    return self.trace_dispatch
-    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/usr/lib/python3.11/bdb.py", line 90, in trace_dispatch
-    return self.dispatch_line(frame)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/usr/lib/python3.11/bdb.py", line 114, in dispatch_line
-    self.user_line(frame)
-  File "/usr/lib/python3.11/pdb.py", line 344, in user_line
-    self.interaction(frame, None)
-  File "/mnt/c/Users/kmaor/Documents/code/clones/ipython/IPython/core/debugger.py", line 335, in interaction
-    OldPdb.interaction(self, frame, traceback)
-  File "/usr/lib/python3.11/pdb.py", line 440, in interaction
-    self._cmdloop()
-  File "/usr/lib/python3.11/pdb.py", line 404, in _cmdloop
-    self.cmdloop()
-  File "/mnt/c/Users/kmaor/Documents/code/clones/ipython/IPython/terminal/debugger.py", line 139, in cmdloop
-    self._ptcomp.ipy_completer.global_namespace = self.curframe.f_globals
-                                                  ^^^^^^^^^^^^^^^^^^^^^^^
-AttributeError: 'NoneType' object has no attribute 'f_globals'
-
-The bug - we somehow attached during cmdloop and called set_trace. set_trace reset the debugger during cmdloop
-which calls forget which unsets self.curframe.
-"""
-
-"""
-stopping debugee after attach bug:
-Task was destroyed but it is pending!
-task: <Task pending name='Task-17' coro=<StreamWriter.drain() running at /usr/lib/python3.11/asyncio/streams.py:355>>  
-/usr/lib/python3.11/asyncio/base_events.py:675: RuntimeWarning: coroutine 'StreamWriter.drain' was never awaited       
-Task was destroyed but it is pending!
-task: <Task pending name='Task-6' coro=<read_into_until_stopped() running at /mnt/c/Users/kmaor/Documents/code/madbg/ma
-dbg/communication.py:31> wait_for=<Future pending cb=[Task.task_wakeup()]> cb=[Task.task_wakeup()]>
-Task was destroyed but it is pending!
-task: <Task pending name='Task-5' coro=<DebuggerServer._try_handle_client() running at /mnt/c/Users/kmaor/Documents/cod
-e/madbg/madbg/server.py:227> wait_for=<Task pending name='Task-6' coro=<read_into_until_stopped() running at /mnt/c/Use
-rs/kmaor/Documents/code/madbg/madbg/communication.py:31> wait_for=<Future pending cb=[Task.task_wakeup()]> cb=[Task.tas
-k_wakeup()]>>
-Exception ignored in: <coroutine object DebuggerServer._try_handle_client at 0x7fb459c9a6b0>
-Traceback (most recent call last):
-  File "/mnt/c/Users/kmaor/Documents/code/madbg/madbg/server.py", line 229, in _try_handle_client
-  File "/mnt/c/Users/kmaor/Documents/code/madbg/madbg/tty_utils.py", line 97, in print_to_ctty
-NameError: name 'open' is not defined
-Task was destroyed but it is pending!
-task: <Task pending name='Task-8' coro=<read_into() running at /mnt/c/Users/kmaor/Documents/code/madbg/madbg/communicat
-ion.py:20> wait_for=<Future pending cb=[Task.task_wakeup()]>>
-"""
-
-"""
 Bugs:
-    Important:
-        - self.curframe is none bug - as explained above, happens when we set_trace when already set. This should be also
-          adressed in the case there are breakpoint, because then settrace(None) is not called
-        - nice message on client timeout
-        - stopping debuggee after attach shows the stack trace above
-    
     Less important:
         - c-c on original terminal when debugger is open cancels future commands
-        - when an app is active, need two c-c on debugged process to exit:
-            we can't just make those threads daemons, we want cleanup code to run
-            we want to cancel all apps and wait for them
         - trying to attach to two threads in parallel (two threads asleep, c-c to both) - one gets stuck.
         - when writing ? in the terminal, "Object `` not found." is printed to stdout
 
@@ -438,9 +349,7 @@ Improvements:
         - get rid of piping
 
 TODO:
-    - release pyinjector and hypno versions
-    - ipython prs - do we need to patch? or maybe depend on a fork?
-    - support processes without tty
+    - move madbg.threads.run_in_thread into hypno
     - support mac n windows
     
 

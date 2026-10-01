@@ -1,30 +1,30 @@
-import time
-from pytest import raises
-from madbg import run_with_debugging
+from .utils import SCRIPTS_PATH
 
-from .utils import run_script_in_process, JOIN_TIMEOUT, SCRIPTS_PATH, run_in_process, run_client
+SCRIPT = str(SCRIPTS_PATH / 'divide_with_zero.py')
 
 
-def run_divide_with_zero_with_debugging_script(port, post_mortem, set_trace):
-    run_with_debugging(str(SCRIPTS_PATH / 'divide_with_zero.py'), port=port, use_post_mortem=post_mortem,
-                       use_set_trace=set_trace)
+def test_run_with_post_mortem(port, debuggee, client):
+    script = debuggee('-m', 'madbg', 'run', '-p', port, SCRIPT, 'arg', '--flag')
+    c = client('connect', '127.0.0.1', port)
+    c.choose_thread()
+    output = c.run('p yo')
+    assert 'ZeroDivisionError' in output
+    assert '\n1\r' in c.run('c')
+    assert c.wait() == 0
+    exit_code, output = script.wait()
+    assert exit_code != 0
+    assert "ARGV ['arg', '--flag']" in output
 
 
-def test_run_with_debugging_with_post_mortem(port, start_debugger_with_ctty):
-    debugger_future = run_script_in_process(run_divide_with_zero_with_debugging_script, start_debugger_with_ctty, port,
-                                            set_trace=False, post_mortem=True)
-    time.sleep(1)
-    assert not debugger_future.done()
-    client_future = run_in_process(run_client, port, b'c\n')
-    with raises(ZeroDivisionError):
-        debugger_future.result(JOIN_TIMEOUT)
-    client_future.result(JOIN_TIMEOUT)
-
-
-def test_run_with_debugging_with_set_trace(port, start_debugger_with_ctty):
-    debugger_future = run_script_in_process(run_divide_with_zero_with_debugging_script, start_debugger_with_ctty, port,
-                                            set_trace=True, post_mortem=False)
-    assert not debugger_future.done()
-    client_future = run_in_process(run_client, port, b'n\nn\nyo = 0\nc\n')
-    debugger_future.result(JOIN_TIMEOUT)
-    client_future.result(JOIN_TIMEOUT)
+def test_run_with_set_trace(port, debuggee, client):
+    script = debuggee('-m', 'madbg', 'run', '-p', port, '--use-set-trace', '--no-post-mortem', SCRIPT)
+    c = client('connect', '127.0.0.1', port)
+    c.choose_thread()
+    for _ in range(3):
+        c.run('n')
+    c.run('yo = 0')
+    c.run('c')
+    assert c.wait() == 0
+    exit_code, output = script.wait()
+    assert exit_code == 0
+    assert 'ZeroDivisionError' not in output

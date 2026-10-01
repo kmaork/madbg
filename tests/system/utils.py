@@ -1,38 +1,19 @@
-import atexit
 import os
-import pty
-import select
+import re
 import socket
-from concurrent.futures import ProcessPoolExecutor
+import subprocess
+import sys
 from contextlib import closing
 from pathlib import Path
 
-from madbg import client
-from madbg.consts import STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO
-from madbg.tty_utils import PTY
+import pexpect
 
-JOIN_TIMEOUT = 5
-CONNECT_TIMEOUT = 5
 SCRIPTS_PATH = Path(__file__).parent / 'scripts'
-
-
-def run_in_process(func, *args, **kwargs):
-    return ProcessPoolExecutor(1).submit(func, *args, **kwargs)
-
-
-def _run_script(script, start_with_ctty, args, kwargs):
-    """
-    Meant to be called inside a python subprocess, do NOT call directly.
-    """
-    enter_pty(start_with_ctty)
-    result = script(*args, **kwargs)
-    # Python-spawned subprocesses do not call exit funcs - https://stackoverflow.com/q/34506638/2907819
-    atexit._run_exitfuncs()
-    return result
-
-
-def run_script_in_process(script, start_with_ctty, *args, **kwargs):
-    return run_in_process(_run_script, script, start_with_ctty, args, kwargs)
+TIMEOUT = 20
+ENV = {**os.environ, 'TERM': 'xterm', 'PROMPT_TOOLKIT_NO_CPR': '1'}
+ANSI_ESCAPE = re.compile(r'\x1b(\[[0-?]*[ -/]*[@-~]|[@-Z\\-_])')
+DOWN = '\x1b[B'
+CTRL_C = '\x03'
 
 
 def find_free_port() -> int:
@@ -43,32 +24,88 @@ def find_free_port() -> int:
         return s.getsockname()[1]
 
 
-def enter_pty(attach_as_ctty, connect_stdio_to_pty=True):
-    """
-    To be used in a subprocess that wants to be run inside a pty.
-    Enters a new session, opens a new pty and sets the pty to be its controlling tty.
-    If connect_output_to_pty is True, the process's stdio will be redirected to the pty's
-    slave interface.
-
-    :return: The master fd for the pty.
-    """
-    os.setsid()
-    master_fd, slave_fd = pty.openpty()
-    if attach_as_ctty:
-        os.close(os.open(os.ttyname(slave_fd), os.O_RDWR))  # Set the PTY to be our CTTY
-    if connect_stdio_to_pty:
-        for fd_to_override in (STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO):
-            os.dup2(slave_fd, fd_to_override)
-    return master_fd, slave_fd
+def spawn(*args) -> pexpect.spawn:
+    return pexpect.spawn(sys.executable, list(args), dimensions=(50, 150), timeout=TIMEOUT, env=ENV,
+                         encoding='utf-8', codec_errors='replace')
 
 
-def run_client(port: int, debugger_input: bytes):
-    """ Run client process and return client's tty output """
-    master_fd, slave_fd = enter_pty(True, connect_stdio_to_pty=False)
-    os.write(master_fd, debugger_input)
-    client.connect_to_debugger(port=port, timeout=CONNECT_TIMEOUT, in_fd=slave_fd, out_fd=slave_fd)
-    data = b''
-    while select.select([master_fd], [], [], 0)[0]:
-        data += os.read(master_fd, 4096)
-    PTY(master_fd, slave_fd).close()
-    return data
+def strip_ansi(text: str) -> str:
+    return ANSI_ESCAPE.sub('', text)
+
+
+class Debuggee:
+    """ A python script running in its own session, with or without a controlling tty """
+
+    def __init__(self, script: str, *args, with_ctty: bool = True):
+        """ :param script: A script name from the scripts dir, or python flags such as -m """
+        argv = [script if script.startswith('-') else str(SCRIPTS_PATH / script), *map(str, args)]
+        self.with_ctty = with_ctty
+        if with_ctty:
+            self.process = spawn(*argv)
+        else:
+            self.process = subprocess.Popen([sys.executable, *argv], env=ENV, start_new_session=True,
+                                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                            stderr=subprocess.STDOUT, text=True)
+
+    @property
+    def pid(self) -> int:
+        return self.process.pid
+
+    def wait(self):
+        """ :return: The exit code and output of the script """
+        if self.with_ctty:
+            self.process.expect(pexpect.EOF)
+            output = self.process.before
+            self.process.close()
+            return self.process.exitstatus, strip_ansi(output)
+        output, _ = self.process.communicate(timeout=TIMEOUT)
+        return self.process.returncode, output
+
+    def kill(self):
+        if self.with_ctty:
+            self.process.terminate(force=True)
+        elif self.process.poll() is None:
+            self.process.kill()
+            self.process.communicate()
+
+
+class Client:
+    """ A madbg client running in a pty """
+
+    def __init__(self, *madbg_args):
+        self.process = spawn('-m', 'madbg', *map(str, madbg_args))
+
+    @classmethod
+    def connect(cls, port: int) -> 'Client':
+        return cls('connect', '127.0.0.1', port)
+
+    def expect(self, pattern) -> str:
+        """ :return: The output up to the pattern, without ansi escapes """
+        self.process.expect(pattern)
+        return strip_ansi(self.process.before)
+
+    def choose_thread(self, index: int = 0):
+        self.expect('Choose a thread')
+        # Wait for the whole dialog to be drawn before navigating it
+        self.expect(r'Exit')
+        self.process.send(DOWN * index + (' ' if index else '') + '\t\r')
+
+    def exit_thread_menu(self):
+        self.expect('Choose a thread')
+        self.expect(r'Exit')
+        self.process.send('\t\t\r')
+
+    def run(self, command: str, thread: str = 'MainThread') -> str:
+        """ Wait for a new debugger prompt, run the command and return the output that preceded the prompt """
+        # Every new prompt enables bracketed paste
+        output = self.expect(r'\x1b\[\?2004h[^\n]*' + thread + '>')
+        self.process.send(command + '\r')
+        return output
+
+    def wait(self) -> int:
+        self.process.expect(pexpect.EOF)
+        self.process.close()
+        return self.process.exitstatus
+
+    def kill(self):
+        self.process.terminate(force=True)

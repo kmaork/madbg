@@ -1,0 +1,4 @@
+[submodule "third_party/hypno"]
+	path = third_party/hypno
+	url = https://github.com/kmaork/hypno
+	branch = claude/run-in-thread-no-main-reimport

@@ -1,4 +1,3 @@
-import sys
 from click import ClickException, group, argument, option, pass_context
 
 from madbg.client import connect_to_debugger
@@ -27,8 +26,9 @@ def cli():
 def connect(ip, port, timeout):
     try:
         connect_to_debugger((ip, port), timeout=timeout)
-    except ConnectionRefusedError:
-        raise ClickException('Connection refused - did you use the right port?')
+    except TimeoutError:
+        raise ClickException(f'Could not connect to a debugger at {ip}:{port} within {timeout} seconds - '
+                             f'did you use the right address?')
 
 
 @cli.command()
@@ -36,7 +36,11 @@ def connect(ip, port, timeout):
 @port_argument
 @connect_timeout_option
 def attach(pid, port, timeout):
-    attach_to_process(pid, port, connect_timeout=timeout)
+    try:
+        attach_to_process(pid, port, connect_timeout=timeout)
+    except TimeoutError:
+        raise ClickException(f'Injected the debugger into {pid} but could not connect to it within {timeout} seconds - '
+                             f'can process {pid} import madbg?')
 
 
 @cli.command(help='Run the given script or module with debugging features. '
@@ -52,7 +56,7 @@ def attach(pid, port, timeout):
 @argument('py_file', type=str, required=True)
 @pass_context
 def run(context, bind_ip, port, run_as_module, py_file, no_post_mortem, use_set_trace):
-    argv = [sys.argv[0], *context.args]
+    argv = context.args
     run_with_debugging(py_file, run_as_module=run_as_module, argv=argv, use_post_mortem=not no_post_mortem,
                        use_set_trace=use_set_trace, addr=(bind_ip, port))
 
